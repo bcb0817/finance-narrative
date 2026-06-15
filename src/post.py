@@ -122,7 +122,7 @@ def main(mode: str = "test") -> None:
         post_tweet("世界が平和になりますように🕊️")
         return
 
-    item = fetch_news(with_link=(mode == "link"))
+    item = fetch_news()
     if not item:
         logger.error("ニュース取得失敗")
         return
