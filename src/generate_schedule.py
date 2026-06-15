@@ -99,7 +99,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: '投稿モード（link / normal / test）'
+        description: '投稿モード（link / normal / diagram / test）'
         required: false
         default: 'test'
 
@@ -128,7 +128,12 @@ jobs:
             if [ "$HOUR" = "19" ] || [ "$HOUR" = "21" ] || [ "$HOUR" = "02" ] || [ "$HOUR" = "08" ]; then
               echo "mode=link" >> $GITHUB_OUTPUT
             else
-              echo "mode=normal" >> $GITHUB_OUTPUT
+              RAND=$((RANDOM % 2))
+              if [ "$RAND" = "0" ]; then
+                echo "mode=normal" >> $GITHUB_OUTPUT
+              else
+                echo "mode=diagram" >> $GITHUB_OUTPUT
+              fi
             fi
           fi
 
