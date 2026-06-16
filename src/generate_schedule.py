@@ -14,9 +14,9 @@ from typing import List, Tuple
 REPO = "bcb0817/Automated-X-finance-posting-bot"
 WORKFLOW_PATH = ".github/workflows/post.yml"
 
-MIN_POSTS = 40
-MAX_POSTS = 45
-MIN_GAP_MINUTES = 15
+MIN_POSTS = 35
+MAX_POSTS = 40
+MIN_GAP_MINUTES = 12
 
 # 毎時00分前後と58〜59分を避ける
 AVOID_MINUTES = {0, 1, 2, 3, 4, 58, 59}
