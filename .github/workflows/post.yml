@@ -2,55 +2,45 @@ name: X Finance Auto Post Bot
 
 on:
   schedule:
-    - cron: '43 19 * * *'
-    - cron: '53 19 * * *'
-    - cron: '19 20 * * *'
-    - cron: '36 20 * * *'
-    - cron: '13 21 * * *'
-    - cron: '27 21 * * *'
-    - cron: '39 21 * * *'
-    - cron: '59 21 * * *'
-    - cron: '7 22 * * *'
-    - cron: '17 22 * * *'
-    - cron: '23 22 * * *'
-    - cron: '41 22 * * *'
-    - cron: '49 22 * * *'
-    - cron: '56 22 * * *'
-    - cron: '19 23 * * *'
-    - cron: '36 23 * * *'
-    - cron: '5 2 * * *'
-    - cron: '14 2 * * *'
-    - cron: '19 2 * * *'
-    - cron: '24 2 * * *'
-    - cron: '29 2 * * *'
-    - cron: '36 2 * * *'
-    - cron: '18 3 * * *'
-    - cron: '45 3 * * *'
-    - cron: '53 3 * * *'
-    - cron: '7 8 * * *'
-    - cron: '26 8 * * *'
-    - cron: '33 8 * * *'
-    - cron: '53 8 * * *'
-    - cron: '3 9 * * *'
-    - cron: '12 9 * * *'
-    - cron: '18 9 * * *'
-    - cron: '38 9 * * *'
-    - cron: '38 10 * * *'
-    - cron: '55 10 * * *'
-    - cron: '4 11 * * *'
-    - cron: '22 11 * * *'
-    - cron: '29 11 * * *'
-    - cron: '35 11 * * *'
-    - cron: '45 11 * * *'
-    - cron: '56 11 * * *'
-    - cron: '8 12 * * *'
-    - cron: '17 12 * * *'
-    - cron: '25 12 * * *'
-    - cron: '41 12 * * *'
-    - cron: '51 12 * * *'
-    - cron: '17 13 * * *'
-    - cron: '39 13 * * *'
-    - cron: '58 13 * * *'
+    - cron: '42 19 * * *'  # JST 04:42
+    - cron: '5 20 * * *'  # JST 05:05
+    - cron: '48 20 * * *'  # JST 05:48
+    - cron: '11 21 * * *'  # JST 06:11
+    - cron: '28 21 * * *'  # JST 06:28
+    - cron: '40 21 * * *'  # JST 06:40
+    - cron: '55 21 * * *'  # JST 06:55
+    - cron: '13 22 * * *'  # JST 07:13
+    - cron: '38 22 * * *'  # JST 07:38
+    - cron: '55 22 * * *'  # JST 07:55
+    - cron: '19 23 * * *'  # JST 08:19
+    - cron: '37 23 * * *'  # JST 08:37
+    - cron: '55 23 * * *'  # JST 08:55
+    - cron: '10 2 * * *'  # JST 11:10
+    - cron: '22 2 * * *'  # JST 11:22
+    - cron: '34 2 * * *'  # JST 11:34
+    - cron: '57 2 * * *'  # JST 11:57
+    - cron: '9 3 * * *'  # JST 12:09
+    - cron: '30 3 * * *'  # JST 12:30
+    - cron: '48 3 * * *'  # JST 12:48
+    - cron: '10 8 * * *'  # JST 17:10
+    - cron: '23 8 * * *'  # JST 17:23
+    - cron: '46 8 * * *'  # JST 17:46
+    - cron: '6 9 * * *'  # JST 18:06
+    - cron: '29 9 * * *'  # JST 18:29
+    - cron: '46 9 * * *'  # JST 18:46
+    - cron: '8 10 * * *'  # JST 19:08
+    - cron: '23 10 * * *'  # JST 19:23
+    - cron: '41 10 * * *'  # JST 19:41
+    - cron: '7 11 * * *'  # JST 20:07
+    - cron: '27 11 * * *'  # JST 20:27
+    - cron: '49 11 * * *'  # JST 20:49
+    - cron: '16 12 * * *'  # JST 21:16
+    - cron: '29 12 * * *'  # JST 21:29
+    - cron: '52 12 * * *'  # JST 21:52
+    - cron: '14 13 * * *'  # JST 22:14
+    - cron: '26 13 * * *'  # JST 22:26
+    - cron: '45 13 * * *'  # JST 22:45
+    - cron: '57 13 * * *'  # JST 22:57
   workflow_dispatch:
     inputs:
       mode:
@@ -58,11 +48,16 @@ on:
         required: false
         default: 'test'
 
+concurrency:
+  group: x-finance-auto-post-bot
+  cancel-in-progress: false
+
 jobs:
   post:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
       - uses: actions/checkout@v4
 
@@ -79,8 +74,8 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
           else
-            HOUR=$(date -u +%H)
-            if [ "$HOUR" = "19" ] || [ "$HOUR" = "21" ] || [ "$HOUR" = "02" ] || [ "$HOUR" = "08" ]; then
+            HOUR=$(TZ=Asia/Tokyo date +%H)
+            if [ "$HOUR" = "04" ] || [ "$HOUR" = "06" ] || [ "$HOUR" = "11" ] || [ "$HOUR" = "17" ]; then
               echo "mode=link" >> $GITHUB_OUTPUT
             else
               RAND=$((RANDOM % 2))
