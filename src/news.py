@@ -2,12 +2,10 @@ import json
 import logging
 import random
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Optional
 import urllib.request
 import urllib.error
 
-# feedparserはrequirements.txtに追加必要
 try:
     import feedparser
 except ImportError:
@@ -19,32 +17,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# RSSフィード一覧
-RSS_FEEDS: list[dict] = [
-    {
-        "name": "Reuters Markets",
-        "url": "https://feeds.reuters.com/reuters/businessNews"
-    },
-    {
-        "name": "Yahoo Finance",
-        "url": "https://finance.yahoo.com/news/rssindex"
-    },
-    {
-        "name": "MarketWatch",
-        "url": "https://feeds.marketwatch.com/marketwatch/topstories/"
-    },
-    {
-        "name": "CNBC Markets",
-        "url": "https://search.cnbc.com/rs/search/combinedcombined/view/ajaxData.aspx?partnerId=1&categorytype=type&type=rss&rss=1"
-    },
+RSS_FEEDS: list[dict[str, str | int]] = [
+    {"name": "Yahoo Finance", "url": "https://finance.yahoo.com/news/rssindex", "category": "market_news", "priority": 3},
+    {"name": "MarketWatch", "url": "https://feeds.marketwatch.com/marketwatch/topstories/", "category": "market_news", "priority": 3},
+    {"name": "Investing.com", "url": "https://www.investing.com/rss/news.rss", "category": "market_news", "priority": 3},
+    {"name": "Fed Monetary Policy", "url": "https://www.federalreserve.gov/feeds/press_monetary.xml", "category": "central_bank", "priority": 5},
+    {"name": "Fed Speeches", "url": "https://www.federalreserve.gov/feeds/speeches.xml", "category": "central_bank", "priority": 4},
+    {"name": "Fed H.15 Interest Rates", "url": "https://www.federalreserve.gov/feeds/h15.xml", "category": "rates", "priority": 5},
+    {"name": "ECB Press Releases", "url": "https://www.ecb.europa.eu/rss/press.html", "category": "central_bank", "priority": 4},
+    {"name": "ECB Speeches", "url": "https://www.ecb.europa.eu/rss/speeches.html", "category": "central_bank", "priority": 3},
+    {"name": "BEA News Releases", "url": "https://www.bea.gov/news/glance.xml", "category": "macro_data", "priority": 5},
 ]
 
-# 金融クラスタ向けキーワード
 FINANCE_KEYWORDS: list[str] = [
     "株", "stock", "market", "Fed", "GDP", "inflation", "金利", "interest rate",
     "bitcoin", "crypto", "円", "yen", "dollar", "euro", "oil", "gold",
     "earnings", "決算", "recession", "利上げ", "利下げ", "bond", "yield",
-    "nasdaq", "dow", "s&p", "nikkei", "日経"
+    "nasdaq", "dow", "s&p", "nikkei", "日経", "rate", "policy", "monetary",
+    "ECB", "BOJ", "CPI", "PPI", "employment", "jobs", "trade"
 ]
 
 
@@ -54,13 +44,17 @@ class NewsItem:
     url: str
     source: str
     published: str
+    category: str = "market_news"
+    priority: int = 3
 
     def to_dict(self) -> dict:
         return {
             "title": self.title,
             "url": self.url,
             "source": self.source,
-            "published": self.published
+            "published": self.published,
+            "category": self.category,
+            "priority": self.priority,
         }
 
 
@@ -69,9 +63,11 @@ def fetch_feed(feed: dict) -> list[NewsItem]:
     items: list[NewsItem] = []
     name = feed["name"]
     url = feed["url"]
+    category = str(feed.get("category", "market_news"))
+    priority = int(feed.get("priority", 3))
 
     try:
-        logger.info(f"{name} を取得中: {url}")
+        logger.info(f"{name} を取得中")
         parsed = feedparser.parse(url)
 
         if parsed.bozo:
@@ -89,7 +85,9 @@ def fetch_feed(feed: dict) -> list[NewsItem]:
                 title=title,
                 url=link,
                 source=name,
-                published=published
+                published=published,
+                category=category,
+                priority=priority,
             ))
 
         logger.info(f"{name}: {len(items)}件取得")
@@ -111,13 +109,13 @@ def deduplicate(items: list[NewsItem]) -> list[NewsItem]:
     return unique
 
 
-def score_item(item: NewsItem) -> int:
-    """金融クラスタ向けスコアリング"""
-    score = 0
+def score_item(item: NewsItem) -> float:
+    """優先度とキーワードでスコアリング"""
+    score = float(item.priority)
     text = (item.title + " " + item.source).lower()
     for keyword in FINANCE_KEYWORDS:
         if keyword.lower() in text:
-            score += 1
+            score += 0.5
     return score
 
 
@@ -126,13 +124,10 @@ def select_best_item(items: list[NewsItem]) -> Optional[NewsItem]:
     if not items:
         return None
 
-    # スコアでソート
     scored = sorted(items, key=lambda x: score_item(x), reverse=True)
-
-    # 上位5件からランダムに選ぶ
     top = scored[:5]
     selected = random.choice(top)
-    logger.info(f"選択: [{selected.source}] {selected.title}")
+    logger.info(f"選択: [{selected.source}] [{selected.category}] {selected.title}")
     return selected
 
 
@@ -146,11 +141,9 @@ def fetch_news() -> Optional[NewsItem]:
 
     logger.info(f"合計取得件数: {len(all_items)}件")
 
-    # 重複除去
     unique_items = deduplicate(all_items)
     logger.info(f"重複除去後: {len(unique_items)}件")
 
-    # 最良の1件を選ぶ
     return select_best_item(unique_items)
 
 
