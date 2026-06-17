@@ -2,6 +2,8 @@ import json
 import logging
 import random
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Optional
 import urllib.request
 import urllib.error
@@ -109,6 +111,19 @@ def deduplicate(items: list[NewsItem]) -> list[NewsItem]:
     return unique
 
 
+def is_recent(item: NewsItem, hours: int = 24) -> bool:
+    """24時間以内のニュースかチェック"""
+    if not item.published:
+        return True
+    try:
+        pub_date = parsedate_to_datetime(item.published)
+        pub_date = pub_date.astimezone(timezone.utc)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        return pub_date >= cutoff
+    except Exception:
+        return True
+
+
 def score_item(item: NewsItem) -> float:
     """優先度とキーワードでスコアリング"""
     score = float(item.priority)
@@ -124,7 +139,14 @@ def select_best_item(items: list[NewsItem]) -> Optional[NewsItem]:
     if not items:
         return None
 
-    scored = sorted(items, key=lambda x: score_item(x), reverse=True)
+    # 24時間以内に絞る
+    recent = [item for item in items if is_recent(item, hours=24)]
+
+    if not recent:
+        logger.warning("24時間以内のニュースなし。全件から選択します")
+        recent = items
+
+    scored = sorted(recent, key=lambda x: score_item(x), reverse=True)
     top = scored[:5]
     selected = random.choice(top)
     logger.info(f"選択: [{selected.source}] [{selected.category}] {selected.title}")
