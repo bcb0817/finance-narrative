@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-MAX_POST_LENGTH = 1000  # Xプレミアムなので余裕を持たせる
-NG_WORDS: list[str] = []  # 必要に応じて追加
+MAX_POST_LENGTH = 1000
+NG_WORDS: list[str] = []
 
 
 def get_tweepy_client() -> tweepy.Client:
@@ -47,7 +47,6 @@ def get_anthropic_client() -> anthropic.Anthropic:
 
 
 def clean_text(text: str) -> str:
-    """Claudeの余計な引用符や空白を軽く整える"""
     text = text.strip()
     if text.startswith("「") and text.endswith("」"):
         text = text[1:-1].strip()
@@ -57,7 +56,6 @@ def clean_text(text: str) -> str:
 
 
 def safety_check(text: str) -> None:
-    """投稿前の最低限チェック"""
     if not text or not text.strip():
         raise ValueError("投稿本文が空です")
     if len(text) > MAX_POST_LENGTH:
@@ -85,8 +83,7 @@ def build_finance_prompt(
     diagram: bool = False,
 ) -> str:
     if diagram:
-        return f"""
-以下の金融ニュースを元に、Xに投稿する日本語の図解風ポストを1つ作成してください。
+        return f"""以下の金融ニュースを元に、Xに投稿する日本語の図解風ポストを1つ作成してください。
 
 ニュース：
 {item.title}
@@ -121,8 +118,7 @@ def build_finance_prompt(
     else:
         length_rule = "120文字から260文字以内"
 
-    return f"""
-以下の金融ニュースを元に、Xに投稿する日本語のポストを1つ作成してください。
+    return f"""以下の金融ニュースを元に、Xに投稿する日本語のポストを1つ作成してください。
 
 ニュース：
 {item.title}
@@ -151,15 +147,13 @@ def build_finance_prompt(
 
 
 def generate_tweet_with_link(item: NewsItem) -> str:
-    """リンクあり投稿を生成"""
     prompt = build_finance_prompt(item, with_link=True)
     text = generate_by_claude(prompt, max_tokens=400)
-    safety_check(text)  # URL追加前にチェック
+    safety_check(text)
     return f"{text}\n{item.url}"
 
 
 def generate_tweet_without_link(item: NewsItem) -> str:
-    """リンクなし投稿を生成"""
     prompt = build_finance_prompt(item, with_link=False)
     text = generate_by_claude(prompt, max_tokens=400)
     safety_check(text)
@@ -167,7 +161,6 @@ def generate_tweet_without_link(item: NewsItem) -> str:
 
 
 def generate_tweet_diagram(item: NewsItem) -> str:
-    """図解形式の投稿を生成"""
     prompt = build_finance_prompt(item, diagram=True)
     text = generate_by_claude(prompt, max_tokens=500)
     safety_check(text)
@@ -185,29 +178,19 @@ def post_tweet(text: str) -> None:
         raise
 
 
-def dry_run(text: str) -> None:
-    logger.info("=== DRY RUN: 投稿はしません ===")
-    logger.info(f"文字数: {len(text)}")
-    logger.info(f"内容:\n{text}")
-
-
 def create_tweet(mode: str, item: NewsItem) -> str:
-    if mode in ["link", "link-dry-run"]:
+    if mode == "link":
         logger.info("リンクあり投稿を生成中...")
         return generate_tweet_with_link(item)
-    if mode in ["diagram", "diagram-dry-run"]:
+    if mode == "diagram":
         logger.info("図解形式の投稿を生成中...")
         return generate_tweet_diagram(item)
     logger.info("リンクなし投稿を生成中...")
     return generate_tweet_without_link(item)
 
 
-def main(mode: str = "dry-run") -> None:
+def main(mode: str = "diagram") -> None:
     logger.info(f"mode: {mode}")
-
-    if mode == "test":
-        post_tweet("世界が平和になりますように🕊️")
-        return
 
     item: Optional[NewsItem] = fetch_news()
     if not item:
@@ -219,10 +202,6 @@ def main(mode: str = "dry-run") -> None:
 
     tweet = create_tweet(mode, item)
 
-    if "dry-run" in mode:
-        dry_run(tweet)
-        return
-
     if mode in ["post", "normal", "link", "diagram"]:
         post_tweet(tweet)
         return
@@ -231,5 +210,5 @@ def main(mode: str = "dry-run") -> None:
 
 
 if __name__ == "__main__":
-    mode = sys.argv[1] if len(sys.argv) > 1 else "dry-run"
+    mode = sys.argv[1] if len(sys.argv) > 1 else "diagram"
     main(mode)
