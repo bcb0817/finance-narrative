@@ -2,43 +2,45 @@ name: X Finance Auto Post Bot
 
 on:
   schedule:
-    - cron: '34 19 * * *'  # JST 04:34
     - cron: '54 19 * * *'  # JST 04:54
-    - cron: '56 20 * * *'  # JST 05:56
-    - cron: '13 21 * * *'  # JST 06:13
-    - cron: '37 21 * * *'  # JST 06:37
-    - cron: '55 21 * * *'  # JST 06:55
-    - cron: '18 22 * * *'  # JST 07:18
-    - cron: '36 22 * * *'  # JST 07:36
-    - cron: '50 22 * * *'  # JST 07:50
-    - cron: '14 23 * * *'  # JST 08:14
-    - cron: '36 23 * * *'  # JST 08:36
-    - cron: '49 23 * * *'  # JST 08:49
-    - cron: '6 2 * * *'  # JST 11:06
-    - cron: '19 2 * * *'  # JST 11:19
-    - cron: '34 2 * * *'  # JST 11:34
+    - cron: '18 20 * * *'  # JST 05:18
+    - cron: '54 20 * * *'  # JST 05:54
+    - cron: '11 21 * * *'  # JST 06:11
+    - cron: '34 21 * * *'  # JST 06:34
+    - cron: '48 21 * * *'  # JST 06:48
+    - cron: '12 22 * * *'  # JST 07:12
+    - cron: '30 22 * * *'  # JST 07:30
+    - cron: '55 22 * * *'  # JST 07:55
+    - cron: '13 23 * * *'  # JST 08:13
+    - cron: '27 23 * * *'  # JST 08:27
+    - cron: '39 23 * * *'  # JST 08:39
+    - cron: '53 23 * * *'  # JST 08:53
+    - cron: '20 2 * * *'  # JST 11:20
+    - cron: '32 2 * * *'  # JST 11:32
     - cron: '47 2 * * *'  # JST 11:47
-    - cron: '12 3 * * *'  # JST 12:12
-    - cron: '46 3 * * *'  # JST 12:46
-    - cron: '7 8 * * *'  # JST 17:07
-    - cron: '19 8 * * *'  # JST 17:19
-    - cron: '45 8 * * *'  # JST 17:45
-    - cron: '12 9 * * *'  # JST 18:12
-    - cron: '30 9 * * *'  # JST 18:30
-    - cron: '57 9 * * *'  # JST 18:57
-    - cron: '10 10 * * *'  # JST 19:10
-    - cron: '39 10 * * *'  # JST 19:39
-    - cron: '55 10 * * *'  # JST 19:55
-    - cron: '8 11 * * *'  # JST 20:08
-    - cron: '44 11 * * *'  # JST 20:44
-    - cron: '56 11 * * *'  # JST 20:56
-    - cron: '17 12 * * *'  # JST 21:17
-    - cron: '33 12 * * *'  # JST 21:33
-    - cron: '57 12 * * *'  # JST 21:57
-    - cron: '9 13 * * *'  # JST 22:09
-    - cron: '22 13 * * *'  # JST 22:22
+    - cron: '6 3 * * *'  # JST 12:06
+    - cron: '19 3 * * *'  # JST 12:19
+    - cron: '36 3 * * *'  # JST 12:36
+    - cron: '49 3 * * *'  # JST 12:49
+    - cron: '10 8 * * *'  # JST 17:10
+    - cron: '23 8 * * *'  # JST 17:23
+    - cron: '39 8 * * *'  # JST 17:39
+    - cron: '52 8 * * *'  # JST 17:52
+    - cron: '15 9 * * *'  # JST 18:15
+    - cron: '39 9 * * *'  # JST 18:39
+    - cron: '6 10 * * *'  # JST 19:06
+    - cron: '24 10 * * *'  # JST 19:24
+    - cron: '43 10 * * *'  # JST 19:43
+    - cron: '56 10 * * *'  # JST 19:56
+    - cron: '10 11 * * *'  # JST 20:10
+    - cron: '32 11 * * *'  # JST 20:32
+    - cron: '54 11 * * *'  # JST 20:54
+    - cron: '15 12 * * *'  # JST 21:15
+    - cron: '38 12 * * *'  # JST 21:38
+    - cron: '51 12 * * *'  # JST 21:51
+    - cron: '10 13 * * *'  # JST 22:10
+    - cron: '23 13 * * *'  # JST 22:23
     - cron: '40 13 * * *'  # JST 22:40
-    - cron: '52 13 * * *'  # JST 22:52
   workflow_dispatch:
     inputs:
       mode:
