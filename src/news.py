@@ -62,9 +62,6 @@ RSS_FEEDS: dict[str, dict] = {
     "BLS":                    {"url": "https://www.bls.gov/feed/news_release.rss",                        "group": "official_macro",  "priority": 8},
     "EIA":                    {"url": "https://www.eia.gov/rss/todayinenergy.xml",                        "group": "official_macro",  "priority": 7},
     "U.S. Treasury":          {"url": "https://home.treasury.gov/rss/press.xml",                          "group": "official_macro",  "priority": 8},
-
-    # --- 3. company_filings（開示：高めの priority、SECはUA必須） ---
-    "SEC EDGAR 8-K":          {"url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom", "group": "company_filings", "priority": 9},
 }
 
 # group 単位の加点（official_macro / company_filings を高めに）
