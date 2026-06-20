@@ -92,19 +92,14 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Determine post mode
+- name: Determine post mode
         id: mode
         if: steps.guard.outputs.skip == 'false'
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
           else
-            RAND=$((RANDOM % 2))
-            if [ "$RAND" = "0" ]; then
-              echo "mode=link" >> $GITHUB_OUTPUT
-            else
-              echo "mode=diagram" >> $GITHUB_OUTPUT
-            fi
+            echo "mode=diagram" >> $GITHUB_OUTPUT
           fi
 
       - name: Post to X
