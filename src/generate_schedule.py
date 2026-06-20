@@ -296,9 +296,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: '投稿モード（link / normal / diagram / test）'
+        description: '投稿モード（link / normal / diagram / image / dry-run）'
         required: false
-        default: 'test'
+        default: 'dry-run'
 
 concurrency:
   group: x-finance-auto-post-bot
@@ -323,15 +323,31 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Install Japanese fonts
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+
+      - name: Debug time info
+        run: |
+          echo "UTC now : $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "JST now : $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S')"
+          echo "Event   : ${{{{ github.event_name }}}}"
+          echo "SHA     : ${{{{ github.sha }}}}"
+
       - name: Determine post mode
         id: mode
         run: |
-          if [ "${{{{ github.event_name }}}}" = "workflow_dispatch" ]; then
+          JST_H=$(TZ=Asia/Tokyo date +%H)
+          JST_M=$(TZ=Asia/Tokyo date +%M)
+          MIN=$((10#$JST_H * 60 + 10#$JST_M))
+          if [ "$MIN" -lt 270 ] && [ "${{{{ github.event_name }}}}" != "workflow_dispatch" ]; then
+            echo "深夜帯（JST $JST_H:$JST_M）のため投稿スキップ"
+            echo "mode=skip" >> $GITHUB_OUTPUT
+          elif [ "${{{{ github.event_name }}}}" = "workflow_dispatch" ]; then
             echo "mode=${{{{ github.event.inputs.mode }}}}" >> $GITHUB_OUTPUT
           else
-            RAND=$((RANDOM % 2))
-            if [ "$RAND" = "0" ]; then
-              echo "mode=link" >> $GITHUB_OUTPUT
+            # image と diagram を 50/50 でランダム振り分け
+            if [ $((RANDOM % 2)) -eq 0 ]; then
+              echo "mode=image" >> $GITHUB_OUTPUT
             else
               echo "mode=diagram" >> $GITHUB_OUTPUT
             fi
@@ -339,16 +355,19 @@ jobs:
 
       - name: Post to X
         id: post
+        if: steps.mode.outputs.mode != 'skip'
         env:
           API_KEY: ${{{{ secrets.API_KEY }}}}
           API_KEY_SECRET: ${{{{ secrets.API_KEY_SECRET }}}}
           ACCESS_TOKEN: ${{{{ secrets.ACCESS_TOKEN }}}}
           ACCESS_TOKEN_SECRET: ${{{{ secrets.ACCESS_TOKEN_SECRET }}}}
-          ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
-        run: python src/post.py ${{{{ steps.mode.outputs.mode }}}}
+          OPENAI_API_KEY: ${{{{ secrets.OPENAI_API_KEY }}}}
+        run: |
+          cd src
+          python post.py "${{{{ steps.mode.outputs.mode }}}}"
 
       - name: Commit posted history
-        if: success() && steps.mode.outputs.mode != 'test'
+        if: success() && steps.mode.outputs.mode != 'skip' && steps.mode.outputs.mode != 'dry-run'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
