@@ -27,8 +27,22 @@ MAX_POST_LENGTH = 280
 JST = timezone(timedelta(hours=9))
 
 NG_WORDS: list[str] = [
+    "絶対",
+    "確実",
     "爆益",
-   ]
+    "爆上げ",
+    "暴落確定",
+    "急騰確定",
+    "今すぐ買え",
+    "今すぐ売れ",
+    "買い一択",
+    "売り一択",
+    "買うべき",
+    "売るべき",
+    "必ず上がる",
+    "必ず下がる",
+    "テンバガー確定",
+]
 
 PROMPT_SAFETY_RULES = """
 - ニュースにない数字や事実は作らない"""
@@ -85,7 +99,7 @@ def safety_check(text: str) -> None:
             raise ValueError(f"NGワードを検出しました: {word}")
 
 
-def generate_by_openai(prompt: str, max_tokens: int = 500) -> str:
+def generate_by_openai(prompt: str, max_tokens: int = 2000) -> str:
     client = get_openai_client()
     response = client.chat.completions.create(
         model=OPENAI_GENERATE_MODEL,
@@ -199,7 +213,7 @@ risk_level は "low" / "medium" / "high" のいずれかにしてください。
         response = client.chat.completions.create(
             model=OPENAI_REVIEW_MODEL,
             messages=[{"role": "user", "content": review_prompt}],
-            max_completion_tokens=500,
+            max_completion_tokens=2000,
             response_format={"type": "json_object"},
         )
         raw = response.choices[0].message.content or "{}"
@@ -232,18 +246,18 @@ risk_level は "low" / "medium" / "high" のいずれかにしてください。
 
 def generate_tweet_with_link(item: NewsItem) -> str:
     prompt = build_finance_prompt(item, with_link=True)
-    text = generate_by_openai(prompt, max_tokens=500)
+    text = generate_by_openai(prompt, max_tokens=2000)
     return f"{text}\n{item.url}"
 
 
 def generate_tweet_without_link(item: NewsItem) -> str:
     prompt = build_finance_prompt(item, with_link=False)
-    return generate_by_openai(prompt, max_tokens=500)
+    return generate_by_openai(prompt, max_tokens=2000)
 
 
 def generate_tweet_diagram(item: NewsItem) -> str:
     prompt = build_finance_prompt(item, diagram=True)
-    return generate_by_openai(prompt, max_tokens=600)
+    return generate_by_openai(prompt, max_tokens=2000)
 
 
 def create_tweet(mode: str, item: NewsItem) -> str:
