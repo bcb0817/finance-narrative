@@ -190,7 +190,7 @@ def generate_diagram_image(item, openai_client, model: str):
     resp = openai_client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        max_completion_tokens=2000,
+        max_completion_tokens=1200,   # 2000→1200
         reasoning_effort="minimal",
         response_format={"type": "json_object"},
     )
