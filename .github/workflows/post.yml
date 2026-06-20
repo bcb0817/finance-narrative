@@ -3,7 +3,6 @@ name: X Finance Auto Post Bot
 # schedule の cron は GitHub Actions 仕様により UTC。
 # コメントの JST は実際の日本時間での実行目安。
 # このファイルは毎日 0:00 JST に reset.yml が自動更新します。
-
 on:
   schedule:
     - cron: '45 19 * * *'  # JST 04:45
@@ -47,13 +46,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: '投稿モード（link / normal / diagram / test）'
+        description: '投稿モード（link / normal / diagram / dry-run）'
         required: false
-        default: 'diagram'
+        default: 'dry-run'
 
 concurrency:
   group: x-finance-auto-post-bot
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -63,7 +62,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
     steps:
       - uses: actions/checkout@v4
 
@@ -74,8 +72,29 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Debug time info
+        run: |
+          echo "UTC now : $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "JST now : $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S')"
+          echo "Event   : ${{ github.event_name }}"
+          echo "SHA     : ${{ github.sha }}"
+
+      - name: Night guard (JST 00:00-04:29 skip)
+        id: guard
+        run: |
+          JST_H=$(TZ=Asia/Tokyo date +%H)
+          JST_M=$(TZ=Asia/Tokyo date +%M)
+          MIN=$((10#$JST_H * 60 + 10#$JST_M))
+          if [ "$MIN" -lt 270 ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "深夜帯（JST $JST_H:$JST_M）のため投稿スキップ"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Determine post mode
         id: mode
+        if: steps.guard.outputs.skip == 'false'
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
@@ -90,16 +109,17 @@ jobs:
 
       - name: Post to X
         id: post
+        if: steps.guard.outputs.skip == 'false'
         env:
           API_KEY: ${{ secrets.API_KEY }}
           API_KEY_SECRET: ${{ secrets.API_KEY_SECRET }}
           ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
           ACCESS_TOKEN_SECRET: ${{ secrets.ACCESS_TOKEN_SECRET }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python src/post.py ${{ steps.mode.outputs.mode }}
 
       - name: Commit posted history
-        if: success() && steps.mode.outputs.mode != 'test'
+        if: success() && steps.guard.outputs.skip == 'false' && steps.mode.outputs.mode != 'dry-run'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
