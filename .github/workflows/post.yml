@@ -1,5 +1,5 @@
 name: X Finance Auto Post Bot
-
+# resync 2026-06-20
 # schedule の cron は GitHub Actions 仕様により UTC。
 # コメントの JST は実際の日本時間での実行目安。
 # このファイルは毎日 0:00 JST に reset.yml が自動更新します。
