@@ -49,9 +49,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: '投稿モード（link / normal / diagram / image / dry-run）'
+        description: '投稿モード（diagram / image / dry-run）'
         required: false
-        default: 'dry-run'
+        default: 'image'
 
 concurrency:
   group: x-finance-auto-post-bot
