@@ -21,12 +21,10 @@ MAX_POSTS = 40
 MIN_GAP_MINUTES = 12
 MIN_NOON_POSTS = 3
 
-# 毎時00分前後と58〜59分を避ける
 AVOID_MINUTES = {0, 1, 2, 3, 4, 58, 59}
 
 JST_OFFSET_HOURS = 9
 
-# スケジュールは JST の「分（0:00起算）」で設計する
 WINDOWS = [
     ("early",   "早朝", 4 * 60 + 30,  6 * 60, 3),
     ("morning", "朝",   6 * 60,        9 * 60, 10),
@@ -44,20 +42,17 @@ def minute_to_hhmm(minute: int) -> str:
 
 
 def jst_minute_to_utc_cron(minute_jst: int) -> Tuple[int, int]:
-    """JSTの分（0:00起算）→ GitHub Actions cron 用の (UTC時, UTC分)"""
     utc_total = (minute_jst - JST_OFFSET_HOURS * 60) % (24 * 60)
     utc_h, utc_m = divmod(utc_total, 60)
     return utc_h, utc_m
 
 
 def utc_cron_to_jst_minute(utc_h: int, utc_m: int) -> int:
-    """GitHub Actions cron (UTC) → JSTの分（0:00起算）"""
     utc_total = utc_h * 60 + utc_m
     return (utc_total + JST_OFFSET_HOURS * 60) % (24 * 60)
 
 
 def format_cron_line(minute_jst: int) -> str:
-    """JSTで設計した時刻を UTC cron に変換し、コメントには JST 実行時刻を書く"""
     utc_h, utc_m = jst_minute_to_utc_cron(minute_jst)
     return f"'{utc_m} {utc_h} * * *'  # JST {minute_to_hhmm(minute_jst)}"
 
@@ -145,7 +140,6 @@ def validate_schedule(selected: List[int], gap: int) -> None:
 
 
 def verify_cron_conversion(selected_jst: List[int], cron_lines: List[str]) -> None:
-    """生成した UTC cron が意図した JST に戻るか検証する"""
     if len(selected_jst) != len(cron_lines):
         raise RuntimeError("JST時刻数と cron 行数が一致しません。")
 
@@ -167,7 +161,6 @@ def verify_cron_conversion(selected_jst: List[int], cron_lines: List[str]) -> No
 
 
 def print_conversion_log(selected_jst: List[int]) -> None:
-    """UTC cron → JST 実行時刻の確認ログ"""
     print("=" * 60)
     print("UTC cron → JST 実行時刻 確認ログ")
     print("(GitHub Actions の schedule は常に UTC で解釈されます)")
@@ -336,16 +329,11 @@ jobs:
           if [ "${{{{ github.event_name }}}}" = "workflow_dispatch" ]; then
             echo "mode=${{{{ github.event.inputs.mode }}}}" >> $GITHUB_OUTPUT
           else
-            HOUR=$(TZ=Asia/Tokyo date +%H)
-            if [ "$HOUR" = "04" ] || [ "$HOUR" = "06" ] || [ "$HOUR" = "11" ] || [ "$HOUR" = "17" ]; then
+            RAND=$((RANDOM % 2))
+            if [ "$RAND" = "0" ]; then
               echo "mode=link" >> $GITHUB_OUTPUT
             else
-              RAND=$((RANDOM % 2))
-              if [ "$RAND" = "0" ]; then
-                echo "mode=normal" >> $GITHUB_OUTPUT
-              else
-                echo "mode=diagram" >> $GITHUB_OUTPUT
-              fi
+              echo "mode=diagram" >> $GITHUB_OUTPUT
             fi
           fi
 
