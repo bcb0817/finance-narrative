@@ -4,11 +4,37 @@
 LLM が news の内容から最適な type を選び、その type 用のJSONを返す。
 このモジュールが type を見て対応する描画関数にディスパッチする。
 
-type:
-  "flow"     : 因果・波及（材料→見方→注目点 など）
-  "compare"  : 強気 vs 弱気 / 2社比較
-  "stat"     : 決算・指標など数字が主役
-  "timeline" : 日程・順序・イベント列
+描画レイアウトは内部的に4種類のみ（_flow / _compare / _stat / _timeline）。
+表向きの type は約20種類用意し、それぞれを4レイアウトのどれかにマッピングする。
+未知の type は flow にフォールバックする。
+
+■ flow系（因果・連鎖・整理 → _flow レイアウト）
+  "flow"      : 因果・波及（材料→見方→注目点 など）
+  "chain"     : 金利→為替→株式 のような連鎖
+  "risk_path" : リスクの伝播経路
+  "scenario"  : 今後の分岐シナリオ
+  "map"       : テーマの全体像
+  "driver"    : 相場ドライバー整理
+  "watchlist" : 注目点リスト
+  "takeaway"  : 要点整理
+
+■ compare系（対比 → _compare レイアウト）
+  "compare"        : 2対象比較
+  "bull_bear"      : 強気材料 vs 弱気材料
+  "before_after"   : 発表前後・政策前後の変化
+  "sector_compare" : セクター比較
+
+■ stat系（数字が主役 → _stat レイアウト）
+  "stat"             : 数字が主役
+  "earnings"         : 決算速報
+  "macro_indicator"  : CPI・雇用統計・GDP・PMI など
+  "market_snapshot"  : 金利・為替・指数・原油・金などの市場スナップショット
+
+■ timeline系（時系列・順序 → _timeline レイアウト）
+  "timeline"       : 時系列
+  "calendar"       : 今日/今週の重要イベント
+  "event_sequence" : 発表→市場反応→次の材料
+  "policy_path"    : 中銀政策・利下げ/利上げ見通しの時系列
 """
 
 from PIL import Image, ImageDraw, ImageFont
@@ -225,12 +251,62 @@ def _timeline(d, data, y):
 _RENDERERS = {"flow": _flow, "compare": _compare, "stat": _stat, "timeline": _timeline}
 
 
+# ===== 表向きの type（約20種類）と説明 =====
+DIAGRAM_TYPES = {
+    # flow系
+    "flow":            "因果・波及（材料→見方→注目点 など）",
+    "chain":           "金利→為替→株式のような連鎖",
+    "risk_path":       "リスクの伝播経路",
+    "scenario":        "今後の分岐シナリオ",
+    "map":             "テーマの全体像",
+    "driver":          "相場ドライバー整理",
+    "watchlist":       "注目点リスト",
+    "takeaway":        "要点整理",
+    # compare系
+    "compare":         "2対象比較",
+    "bull_bear":       "強気材料 vs 弱気材料",
+    "before_after":    "発表前後・政策前後の変化",
+    "sector_compare":  "セクター比較",
+    # stat系
+    "stat":            "数字が主役",
+    "earnings":        "決算速報",
+    "macro_indicator": "CPI・雇用統計・GDP・PMI など",
+    "market_snapshot": "金利・為替・指数・原油・金などの市場スナップショット",
+    # timeline系
+    "timeline":        "時系列",
+    "calendar":        "今日/今週の重要イベント",
+    "event_sequence":  "発表→市場反応→次の材料",
+    "policy_path":     "中銀政策・利下げ/利上げ見通しの時系列",
+}
+
+# 各 type を内部の描画レイアウト（_RENDERERS のキー）にマッピング
+TYPE_TO_RENDERER = {
+    # flow系 → "flow"
+    "flow": "flow", "chain": "flow", "risk_path": "flow", "scenario": "flow",
+    "map": "flow", "driver": "flow", "watchlist": "flow", "takeaway": "flow",
+    # compare系 → "compare"
+    "compare": "compare", "bull_bear": "compare",
+    "before_after": "compare", "sector_compare": "compare",
+    # stat系 → "stat"
+    "stat": "stat", "earnings": "stat",
+    "macro_indicator": "stat", "market_snapshot": "stat",
+    # timeline系 → "timeline"
+    "timeline": "timeline", "calendar": "timeline",
+    "event_sequence": "timeline", "policy_path": "timeline",
+}
+
+
 def render_diagram(data: dict, out_path: str) -> str:
     img = Image.new("RGB", (W, CANVAS_H), BG)
     d = ImageDraw.Draw(img)
     y = PAD
     y = _header(d, data, y)
-    renderer = _RENDERERS.get(data.get("type"), _flow)  # 不明typeはflowにフォールバック
+
+    # type → renderer_key → 描画関数（未知typeは flow にフォールバック）
+    diagram_type = data.get("type", "flow")
+    renderer_key = TYPE_TO_RENDERER.get(diagram_type, "flow")
+    renderer = _RENDERERS.get(renderer_key, _flow)
+
     y = renderer(d, data, y)
     y = _footer(d, data, y)
     d.rectangle([0, 0, 8, y], fill=ACCENT)  # 左アクセント
@@ -286,6 +362,73 @@ if __name__ == "__main__":
                 {"when": "金曜", "text": "小売売上高。個人消費の底堅さが景気の鍵を握る。"},
             ],
             "hashtags": ["#経済指標", "#米国株"], "handle": "@singa9999",
+        },
+        # ===== 追加type（内部は既存4レイアウトに振り分け） =====
+        "chain": {  # flow系
+            "type": "chain", "tag": "連鎖メモ",
+            "title": "米利上げ観測の再燃が為替・株式に波及",
+            "nodes": [
+                {"label": "金利", "text": "強い経済指標を受け、米長期金利が上昇。利上げ長期化観測が再燃。"},
+                {"label": "為替", "text": "日米金利差の拡大を意識し、ドル円は円安方向に振れやすい地合い。"},
+                {"label": "株式", "text": "割引率上昇でグロース株に逆風。一方で輸出関連・銀行株には追い風。"},
+            ],
+            "hashtags": ["#為替", "#米国株"], "handle": "@singa9999",
+        },
+        "bull_bear": {  # compare系
+            "type": "bull_bear", "tag": "強気と弱気",
+            "title": "日本株、最高値圏での強気材料と弱気材料",
+            "left": {"title": "強気材料", "points": [
+                "好調な企業業績と自社株買い",
+                "新NISAによる継続的な資金流入",
+                "ガバナンス改革への期待"]},
+            "right": {"title": "弱気材料", "points": [
+                "急ピッチな上昇への過熱感",
+                "円高反転による業績下振れ懸念",
+                "海外景気の減速リスク"]},
+            "hashtags": ["#日本株", "#日経平均"], "handle": "@singa9999",
+        },
+        "macro_indicator": {  # stat系
+            "type": "macro_indicator", "tag": "経済指標",
+            "title": "米10月雇用統計、労働市場の減速が鮮明に",
+            "stats": [
+                {"value": "15.0", "unit": "万人", "label": "非農業部門雇用者数", "dir": "down"},
+                {"value": "4.1", "unit": "%", "label": "失業率", "dir": "up"},
+                {"value": "+4.0", "unit": "%", "label": "平均時給 前年比", "dir": "flat"},
+            ],
+            "context": "雇用の伸びが市場予想を下回り、賃金上昇も鈍化。早期利下げ観測を支える内容となった。",
+            "hashtags": ["#雇用統計", "#米国株"], "handle": "@singa9999",
+        },
+        "market_snapshot": {  # stat系
+            "type": "market_snapshot", "tag": "市場概況",
+            "title": "本日の主要マーケット・スナップショット",
+            "stats": [
+                {"value": "+1.2", "unit": "%", "label": "S&P500", "dir": "up"},
+                {"value": "157.8", "unit": "円", "label": "ドル円", "dir": "up"},
+                {"value": "-0.8", "unit": "%", "label": "原油WTI", "dir": "down"},
+            ],
+            "context": "株高・ドル高が進行。原油は需要懸念で軟調。リスク選好がやや優勢な一日。",
+            "hashtags": ["#マーケット", "#為替"], "handle": "@singa9999",
+        },
+        "calendar": {  # timeline系
+            "type": "calendar", "tag": "今週の予定",
+            "title": "今週の重要イベント・経済指標カレンダー",
+            "events": [
+                {"when": "火", "text": "米CPI発表。コアの鈍化が続くかが最大の焦点。"},
+                {"when": "水", "text": "FOMC議事要旨。利下げ時期を巡る議論を確認。"},
+                {"when": "木", "text": "ECB理事会。利下げ示唆の有無に注目。"},
+                {"when": "金", "text": "米小売売上高。個人消費の底堅さを点検。"},
+            ],
+            "hashtags": ["#経済指標", "#米国株"], "handle": "@singa9999",
+        },
+        "takeaway": {  # flow系
+            "type": "takeaway", "tag": "要点整理",
+            "title": "今朝の相場、押さえておきたい3つの要点",
+            "nodes": [
+                {"label": "ポイント1", "text": "米金利低下を背景にハイテク株が反発。ナスダックが主導。"},
+                {"label": "ポイント2", "text": "決算シーズン本格化。ガイダンスの強弱が個別株の明暗を分ける。"},
+                {"label": "ポイント3", "text": "週後半の経済指標待ちで、上値追いは限定的との見方も。"},
+            ],
+            "hashtags": ["#米国株", "#相場メモ"], "handle": "@singa9999",
         },
     }
     for name, data in samples.items():
