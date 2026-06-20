@@ -10,6 +10,7 @@ from openai import OpenAI
 
 from news import fetch_news, NewsItem
 from posted_history import add_posted_entry, get_posted_urls
+from diagram_post import generate_diagram_image
 
 
 logging.basicConfig(
@@ -67,6 +68,15 @@ def get_tweepy_client() -> tweepy.Client:
     )
 
 
+def get_tweepy_api_v1() -> tweepy.API:
+    """画像アップロード用の v1.1 クライアント（OAuth 1.0a）"""
+    auth = tweepy.OAuth1UserHandler(
+        os.environ["API_KEY"], os.environ["API_KEY_SECRET"],
+        os.environ["ACCESS_TOKEN"], os.environ["ACCESS_TOKEN_SECRET"],
+    )
+    return tweepy.API(auth)
+
+
 def get_openai_client() -> OpenAI:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("環境変数が未設定です: OPENAI_API_KEY")
@@ -105,7 +115,7 @@ def generate_by_openai(prompt: str, max_tokens: int = 2000) -> str:
         model=OPENAI_GENERATE_MODEL,
         messages=[{"role": "user", "content": prompt}],
         max_completion_tokens=max_tokens,
-        reasoning_effort="minimal",   # ← 追加
+        reasoning_effort="minimal",
     )
     text = response.choices[0].message.content or ""
     return clean_text(text)
@@ -216,7 +226,7 @@ risk_level は "low" / "medium" / "high" のいずれかにしてください。
             messages=[{"role": "user", "content": review_prompt}],
             max_completion_tokens=2000,
             response_format={"type": "json_object"},
-            reasoning_effort="minimal",   # ← 追加
+            reasoning_effort="minimal",
         )
         raw = response.choices[0].message.content or "{}"
         result = json.loads(raw)
@@ -286,6 +296,42 @@ def post_tweet(text: str) -> str:
         raise
 
 
+def post_tweet_with_image(text: str, image_path: str) -> str:
+    api_v1 = get_tweepy_api_v1()
+    media = api_v1.media_upload(filename=image_path)   # v1.1 でアップ
+    client = get_tweepy_client()                       # v2 で投稿
+    response = client.create_tweet(text=text, media_ids=[media.media_id])
+    tweet_id = str(response.data["id"])
+    logger.info(f"画像つき投稿成功: {tweet_id}")
+    logger.info(f"キャプション: {text}")
+    return tweet_id
+
+
+def handle_image_post(item: NewsItem) -> None:
+    oai = get_openai_client()
+    image_path, caption, review_text, dtype = generate_diagram_image(
+        item, oai, OPENAI_GENERATE_MODEL
+    )
+    logger.info(f"図解type={dtype} / caption={caption!r}")
+
+    if len(caption) > MAX_POST_LENGTH:
+        logger.error(f"キャプションが長すぎます: {len(caption)}文字")
+        return
+    for word in NG_WORDS:
+        if word in review_text:
+            logger.error(f"NGワードを検出しました: {word}")
+            return
+
+    review = review_tweet_with_openai(review_text, item.title, item.source)
+    logger.info(f"レビュー結果: {json.dumps(review, ensure_ascii=False)}")
+    if not review.get("ok_to_post", False):
+        logger.warning(f"AIレビューにより投稿中止: {review.get('reason', '理由なし')}")
+        return
+
+    tweet_id = post_tweet_with_image(caption, image_path)
+    add_posted_entry(item, tweet_id=tweet_id, mode="image")
+
+
 def main(mode: str = "dry-run") -> None:
     logger.info(f"mode: {mode}")
 
@@ -304,6 +350,10 @@ def main(mode: str = "dry-run") -> None:
 
     logger.info(f"取得ニュース: {item.title}")
     logger.info(f"ソース: {item.source}")
+
+    if mode == "image":
+        handle_image_post(item)
+        return
 
     tweet = create_tweet(mode, item)
 
