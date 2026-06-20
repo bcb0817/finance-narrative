@@ -1,0 +1,114 @@
+name: X Finance Auto Post Bot
+
+# schedule の cron は GitHub Actions 仕様により UTC。
+# コメントの JST は実際の日本時間での実行目安。
+# このファイルは毎日 0:00 JST に reset.yml が自動更新します。
+
+on:
+  schedule:
+    - cron: '54 19 * * *'  # JST 04:54
+    - cron: '18 20 * * *'  # JST 05:18
+    - cron: '54 20 * * *'  # JST 05:54
+    - cron: '11 21 * * *'  # JST 06:11
+    - cron: '34 21 * * *'  # JST 06:34
+    - cron: '48 21 * * *'  # JST 06:48
+    - cron: '12 22 * * *'  # JST 07:12
+    - cron: '30 22 * * *'  # JST 07:30
+    - cron: '55 22 * * *'  # JST 07:55
+    - cron: '13 23 * * *'  # JST 08:13
+    - cron: '27 23 * * *'  # JST 08:27
+    - cron: '39 23 * * *'  # JST 08:39
+    - cron: '53 23 * * *'  # JST 08:53
+    - cron: '20 2 * * *'  # JST 11:20
+    - cron: '32 2 * * *'  # JST 11:32
+    - cron: '47 2 * * *'  # JST 11:47
+    - cron: '6 3 * * *'  # JST 12:06
+    - cron: '19 3 * * *'  # JST 12:19
+    - cron: '36 3 * * *'  # JST 12:36
+    - cron: '49 3 * * *'  # JST 12:49
+    - cron: '10 8 * * *'  # JST 17:10
+    - cron: '23 8 * * *'  # JST 17:23
+    - cron: '39 8 * * *'  # JST 17:39
+    - cron: '52 8 * * *'  # JST 17:52
+    - cron: '15 9 * * *'  # JST 18:15
+    - cron: '39 9 * * *'  # JST 18:39
+    - cron: '6 10 * * *'  # JST 19:06
+    - cron: '24 10 * * *'  # JST 19:24
+    - cron: '43 10 * * *'  # JST 19:43
+    - cron: '56 10 * * *'  # JST 19:56
+    - cron: '10 11 * * *'  # JST 20:10
+    - cron: '32 11 * * *'  # JST 20:32
+    - cron: '54 11 * * *'  # JST 20:54
+    - cron: '15 12 * * *'  # JST 21:15
+    - cron: '38 12 * * *'  # JST 21:38
+    - cron: '51 12 * * *'  # JST 21:51
+    - cron: '10 13 * * *'  # JST 22:10
+    - cron: '23 13 * * *'  # JST 22:23
+    - cron: '40 13 * * *'  # JST 22:40
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '投稿モード（link / normal / diagram / test）'
+        required: false
+        default: 'test'
+
+concurrency:
+  group: x-finance-auto-post-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine post mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(TZ=Asia/Tokyo date +%H)
+            if [ "$HOUR" = "04" ] || [ "$HOUR" = "06" ] || [ "$HOUR" = "11" ] || [ "$HOUR" = "17" ]; then
+              echo "mode=link" >> $GITHUB_OUTPUT
+            else
+              RAND=$((RANDOM % 2))
+              if [ "$RAND" = "0" ]; then
+                echo "mode=normal" >> $GITHUB_OUTPUT
+              else
+                echo "mode=diagram" >> $GITHUB_OUTPUT
+              fi
+            fi
+          fi
+
+      - name: Post to X
+        id: post
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+          API_KEY_SECRET: ${{ secrets.API_KEY_SECRET }}
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          ACCESS_TOKEN_SECRET: ${{ secrets.ACCESS_TOKEN_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python src/post.py ${{ steps.mode.outputs.mode }}
+
+      - name: Commit posted history
+        if: success() && steps.mode.outputs.mode != 'test'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/posted_history.json
+          git diff --staged --quiet || git commit -m "Update posted history"
+          git push
