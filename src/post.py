@@ -28,7 +28,21 @@ MAX_POST_LENGTH = 280
 JST = timezone(timedelta(hours=9))
 
 NG_WORDS: list[str] = [
-    "死ね",
+    "絶対",
+    "確実",
+    "爆益",
+    "爆上げ",
+    "暴落確定",
+    "急騰確定",
+    "今すぐ買え",
+    "今すぐ売れ",
+    "買い一択",
+    "売り一択",
+    "買うべき",
+    "売るべき",
+    "必ず上がる",
+    "必ず下がる",
+    "テンバガー確定",
 ]
 
 PROMPT_SAFETY_RULES = """
@@ -242,19 +256,191 @@ risk_level は "low" / "medium" / "high" のいずれかにしてください。
     return result
 
 
+def needs_background_context(item: NewsItem) -> tuple[bool, str]:
+    """
+    背景解説が必要なニュースかを抽象的に判定する。
+    単純なキーワード一致ではなく、以下6観点を gpt-5-nano で評価する：
+      - headline_only_clarity:      見出しだけで意味が伝わるか
+      - market_relevance:           市場が反応する理由が明確か
+      - required_prior_knowledge:   前提知識が必要か
+      - company_context_needed:     企業固有の背景が必要か
+      - macro_context_needed:       マクロ・金利・規制・業界文脈が必要か
+      - misleading_without_context: 背景なしだと誤解されやすいか
+    戻り値: (背景解説が必要か, 判断理由)
+    API失敗時は軽量ヒューリスティックに退避する。
+    """
+    judge_prompt = f"""あなたは金融ニュースの編集者です。
+次のニュースを、SNSで一般の個人投資家に伝えるとき「背景解説が必要か」を判定してください。
+
+ニュースタイトル: {item.title}
+ソース: {item.source}（種別: {getattr(item, "source_group", "market_news")}）
+
+以下6観点を true/false で評価してください。
+- headline_only_clarity:      見出しだけで「何が起きたか」と「なぜ重要か」が伝わる
+- market_relevance:           市場が反応する理由が明確である
+- required_prior_knowledge:   理解に前提知識が必要
+- company_context_needed:     企業固有の背景（株価・業績・財務・資金繰り・継続課題）が必要
+- macro_context_needed:       マクロ・金利・規制・業界構造の文脈が必要
+- misleading_without_context: 背景なしだと過大/過小評価や誤解をされやすい
+
+判定ルール:
+- headline_only_clarity が false、または市場の意味が伝わりにくい、
+  または required_prior_knowledge / company_context_needed / macro_context_needed /
+  misleading_without_context のいずれかが true なら needs_background = true。
+
+以下のJSONのみを返す（説明文・Markdown禁止）。
+{{
+  "headline_only_clarity": true,
+  "market_relevance": true,
+  "required_prior_knowledge": false,
+  "company_context_needed": false,
+  "macro_context_needed": false,
+  "misleading_without_context": false,
+  "needs_background": false,
+  "reason": "日本語で1文、なぜそう判断したか"
+}}"""
+
+    try:
+        client = get_openai_client()
+        response = client.chat.completions.create(
+            model=OPENAI_REVIEW_MODEL,
+            messages=[{"role": "user", "content": judge_prompt}],
+            max_completion_tokens=2000,
+            response_format={"type": "json_object"},
+            reasoning_effort="minimal",
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+        needs = bool(data.get("needs_background", False))
+        # 観点からの導出も併用（モデルが needs_background を誤って false にした場合の保険）
+        derived = (
+            not data.get("headline_only_clarity", True)
+            or data.get("required_prior_knowledge", False)
+            or data.get("company_context_needed", False)
+            or data.get("macro_context_needed", False)
+            or data.get("misleading_without_context", False)
+        )
+        needs = needs or derived
+        reason = str(data.get("reason", "")) or "観点評価により背景解説が必要と判断"
+        return needs, reason
+    except Exception as e:
+        logger.warning(f"背景判定APIに失敗、ヒューリスティックに退避: {e}")
+        return _needs_background_heuristic(item)
+
+
+# 背景解説が必要になりやすい語（API失敗時のフォールバック専用）
+_CONTEXT_SIGNALS: list[str] = [
+    "8-k", "10-k", "10-q", "sec", "filing", "提出", "開示",
+    "増資", "希薄化", "dilution", "delist", "上場廃止", "上場維持",
+    "債務", "資金調達", "資金繰り", "破産", "chapter 11", "restructur", "リストラ",
+    "ガイダンス", "guidance", "下方修正", "上方修正",
+    "cpi", "ppi", "雇用統計", "fomc", "frb", "fed", "利上げ", "利下げ", "金利",
+    "規制", "規制当局", "反トラスト", "antitrust", "関税", "tariff",
+    "オプション", "etf", "信用取引", "空売り", "short squeeze",
+]
+
+
+def _needs_background_heuristic(item: NewsItem) -> tuple[bool, str]:
+    text = (item.title + " " + getattr(item, "source_group", "")).lower()
+    hits = [w for w in _CONTEXT_SIGNALS if w in text]
+    if getattr(item, "source_group", "") in ("official_macro", "company_filings"):
+        return True, f"ソース種別({item.source_group})が制度・開示・マクロ文脈を含むため"
+    if hits:
+        return True, f"背景を要する語を検出({', '.join(hits[:3])})"
+    return False, "見出しのみで意味が伝わると判断（ヒューリスティック）"
+
+
+def build_contextual_finance_prompt(
+    item: NewsItem,
+    *,
+    with_link: bool = False,
+    diagram: bool = False,
+) -> str:
+    """背景解説モードのプロンプト。表面要約を禁止し、文脈・意味・次の確認点を含めさせる。"""
+    if diagram:
+        length_rule = "180文字から240文字以内"
+        format_block = """図解風に、矢印・箇条書き・改行を使ってわかりやすく。
+おすすめの型：
+【背景メモ】
+何が起きた：〇〇
+　↓
+意味・文脈：〇〇（企業/業界/制度/マクロの背景）
+　↓
+注目点：〇〇
+　↓
+次の確認：〇〇"""
+    elif with_link:
+        length_rule = "100文字から170文字以内（URLは別行で付けるため短めに）"
+        format_block = "本文のあと、改行して「注目点：」と「次の確認：」を簡潔に。"
+    else:
+        length_rule = "120文字から240文字以内"
+        format_block = "本文のあと、改行して「注目点：」と「次の確認：」を簡潔に。"
+
+    return f"""以下の金融ニュースを元に、Xに投稿する日本語の「背景解説つき」ポストを1つ作成してください。
+表面的な要約だけでは、前提知識のない読者に重要性が伝わりません。背景と意味を補ってください。
+
+ニュース：
+{item.title}
+
+ソース：
+{item.source}
+
+必ず次の流れを自然に織り込む（見出しの言い換えで終わらせない）：
+1. 何が起きたか
+2. それが何を意味するのか
+3. 背景にある企業・業界・制度・マクロ環境（関係するもののみ）
+4. 市場が注目しやすいポイント
+5. 次に確認すべき点
+
+厳守ルール：
+- {length_rule}
+- 日本の個人投資家・金融クラスタ向けに、中立的かつ簡潔に
+- {format_block}
+- ニュース本文・取得データにないことは断定しない。不確実なことは
+  「可能性がある」「警戒されやすい」「注目されやすい」「確認したい」
+  「市場が意識しやすい」「文脈で見られやすい」等の表現にする
+- 数字・データはニュースタイトルに含まれる場合のみ使う（捏造禁止）
+{PROMPT_SAFETY_RULES}
+- ハッシュタグは最大2個
+- URLは含めない
+- 投稿本文のみ返答する
+
+【禁止】表面要約だけの投稿（悪い例）：
+「〇〇が8-Kを提出。詳細はSEC提出書類を確認。」
+【目指す形（良い例）】：
+「〇〇が8-Kを提出。単なる書類提出ではなく、同社の株価低迷や資金調達懸念の文脈で見られやすい材料。
+注目点：開示が上場維持・希薄化・資金繰りに関係するか。次の確認：追加開示と次回決算。」
+"""
+
+
+def _choose_prompt(item: NewsItem, *, with_link: bool = False, diagram: bool = False) -> str:
+    """背景解説が必要かを判定し、適切なプロンプトを返す（ログ付き）。"""
+    needs, reason = needs_background_context(item)
+    if needs:
+        prompt_type = "contextual"
+        prompt = build_contextual_finance_prompt(item, with_link=with_link, diagram=diagram)
+    else:
+        prompt_type = "standard"
+        prompt = build_finance_prompt(item, with_link=with_link, diagram=diagram)
+    logger.info(
+        f"needs_background_context={str(needs).lower()} / "
+        f"background_reason={reason!r} / selected_prompt_type={prompt_type}"
+    )
+    return prompt
+
+
 def generate_tweet_with_link(item: NewsItem) -> str:
-    prompt = build_finance_prompt(item, with_link=True)
+    prompt = _choose_prompt(item, with_link=True)
     text = generate_by_openai(prompt, max_tokens=2000)
     return f"{text}\n{item.url}"
 
 
 def generate_tweet_without_link(item: NewsItem) -> str:
-    prompt = build_finance_prompt(item, with_link=False)
+    prompt = _choose_prompt(item, with_link=False)
     return generate_by_openai(prompt, max_tokens=2000)
 
 
 def generate_tweet_diagram(item: NewsItem) -> str:
-    prompt = build_finance_prompt(item, diagram=True)
+    prompt = _choose_prompt(item, diagram=True)
     return generate_by_openai(prompt, max_tokens=4000)
 
 
