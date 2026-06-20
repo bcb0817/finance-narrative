@@ -28,7 +28,21 @@ MAX_POST_LENGTH = 280
 JST = timezone(timedelta(hours=9))
 
 NG_WORDS: list[str] = [
-    "今すぐ死ね",
+    "絶対",
+    "確実",
+    "爆益",
+    "爆上げ",
+    "暴落確定",
+    "急騰確定",
+    "今すぐ買え",
+    "今すぐ売れ",
+    "買い一択",
+    "売り一択",
+    "買うべき",
+    "売るべき",
+    "必ず上がる",
+    "必ず下がる",
+    "テンバガー確定",
 ]
 
 PROMPT_SAFETY_RULES = """
@@ -210,7 +224,7 @@ risk_level は "low" / "medium" / "high" のいずれかにしてください。
         response = client.chat.completions.create(
             model=OPENAI_REVIEW_MODEL,
             messages=[{"role": "user", "content": review_prompt}],
-            max_completion_tokens=800,   # 2000→800
+            max_completion_tokens=2000,
             response_format={"type": "json_object"},
             reasoning_effort="minimal",
         )
@@ -244,18 +258,18 @@ risk_level は "low" / "medium" / "high" のいずれかにしてください。
 
 def generate_tweet_with_link(item: NewsItem) -> str:
     prompt = build_finance_prompt(item, with_link=True)
-    text = generate_by_openai(prompt, max_tokens=1000)   # 2000→1000
+    text = generate_by_openai(prompt, max_tokens=2000)
     return f"{text}\n{item.url}"
 
 
 def generate_tweet_without_link(item: NewsItem) -> str:
     prompt = build_finance_prompt(item, with_link=False)
-    return generate_by_openai(prompt, max_tokens=1000)    # 2000→1000
+    return generate_by_openai(prompt, max_tokens=2000)
 
 
 def generate_tweet_diagram(item: NewsItem) -> str:
     prompt = build_finance_prompt(item, diagram=True)
-    return generate_by_openai(prompt, max_tokens=1500)    # 4000→1500
+    return generate_by_openai(prompt, max_tokens=4000)
 
 
 def create_tweet(mode: str, item: NewsItem) -> str:
@@ -295,9 +309,11 @@ def post_tweet_with_image(text: str, image_path: str) -> str:
 
 def handle_image_post(item: NewsItem) -> None:
     oai = get_openai_client()
-    image_path, caption, review_text, dtype = generate_diagram_image(
-        item, oai, OPENAI_GENERATE_MODEL
-    )
+    result = generate_diagram_image(item, oai, OPENAI_GENERATE_MODEL)
+    if result is None:
+        logger.warning("図解の生成に失敗したため、今回の投稿をスキップします")
+        return
+    image_path, caption, review_text, dtype = result
     logger.info(f"図解type={dtype} / caption={caption!r}")
 
     if len(caption) > MAX_POST_LENGTH:
