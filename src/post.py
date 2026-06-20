@@ -1,10 +1,12 @@
 import os
 import sys
+import json
 import logging
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-import anthropic
 import tweepy
+from openai import OpenAI
 
 from news import fetch_news, NewsItem
 from posted_history import add_posted_entry, get_posted_urls
@@ -17,14 +19,33 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-MAX_POST_LENGTH = 260
+# =========================
+# 設定
+# =========================
+
+OPENAI_GENERATE_MODEL = os.getenv("OPENAI_GENERATE_MODEL", "gpt-5-mini")
+OPENAI_REVIEW_MODEL = os.getenv("OPENAI_REVIEW_MODEL", "gpt-5-nano")
+
+MAX_POST_LENGTH = 280
+
+JST = timezone(timedelta(hours=9))
+
 NG_WORDS: list[str] = [
     "絶対",
     "確実",
+    "爆益",
+    "爆上げ",
+    "暴落確定",
+    "急騰確定",
     "今すぐ買え",
     "今すぐ売れ",
-    "爆益確定",
+    "買い一択",
+    "売り一択",
+    "買うべき",
+    "売るべき",
+    "必ず上がる",
+    "必ず下がる",
+    "テンバガー確定",
 ]
 
 PROMPT_SAFETY_RULES = """- 投資助言・売買指示はしない
@@ -32,6 +53,10 @@ PROMPT_SAFETY_RULES = """- 投資助言・売買指示はしない
 - 見通しは「〜の可能性」「〜が意識されやすい」など慎重な表現にする
 - ニュースにない数字や事実は作らない"""
 
+
+# =========================
+# クライアント
+# =========================
 
 def get_tweepy_client() -> tweepy.Client:
     required_envs = [
@@ -52,11 +77,26 @@ def get_tweepy_client() -> tweepy.Client:
     )
 
 
-def get_anthropic_client() -> anthropic.Anthropic:
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        raise RuntimeError("環境変数が未設定です: ANTHROPIC_API_KEY")
-    return anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+def get_openai_client() -> OpenAI:
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("環境変数が未設定です: OPENAI_API_KEY")
+    return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
+
+# =========================
+# 深夜投稿ガード
+# =========================
+
+def is_night_time_jst() -> bool:
+    """JST 00:00〜04:29 は投稿禁止時間帯"""
+    now_jst = datetime.now(JST)
+    minutes = now_jst.hour * 60 + now_jst.minute
+    return 0 <= minutes < (4 * 60 + 30)
+
+
+# =========================
+# テキスト処理
+# =========================
 
 def clean_text(text: str) -> str:
     text = text.strip()
@@ -77,14 +117,18 @@ def safety_check(text: str) -> None:
             raise ValueError(f"NGワードを検出しました: {word}")
 
 
-def generate_by_claude(prompt: str, max_tokens: int = 400) -> str:
-    client = get_anthropic_client()
-    message = client.messages.create(
-        model=ANTHROPIC_MODEL,
-        max_tokens=max_tokens,
+# =========================
+# 生成（OpenAI）
+# =========================
+
+def generate_by_openai(prompt: str, max_tokens: int = 500) -> str:
+    client = get_openai_client()
+    response = client.chat.completions.create(
+        model=OPENAI_GENERATE_MODEL,
         messages=[{"role": "user", "content": prompt}],
+        max_completion_tokens=max_tokens,
     )
-    text = message.content[0].text
+    text = response.choices[0].message.content or ""
     return clean_text(text)
 
 
@@ -156,27 +200,114 @@ def build_finance_prompt(
 """
 
 
+# =========================
+# 投稿前レビュー（OpenAI）
+# =========================
+
+def review_tweet_with_openai(text: str, news_title: str, source: str) -> dict:
+    """投稿前にAIで内容をレビューし、投稿可否をJSONで返す"""
+    client = get_openai_client()
+
+    review_prompt = f"""あなたは金融SNS投稿のコンプライアンス審査担当です。
+以下のX投稿文を審査し、投稿してよいか判断してください。
+
+【元ニュース】
+タイトル: {news_title}
+ソース: {source}
+
+【審査対象の投稿文】
+{text}
+
+【審査基準】
+- 投資助言・売買推奨になっていないか
+- 「絶対」「確実」「必ず」などの断定的な表現がないか
+- ニュースにない数字や事実を捏造していないか
+- 過度に煽る表現になっていないか
+- 誤解を招く内容でないか
+
+以下のJSON形式のみで返答してください。説明文は不要です。
+{{
+  "ok_to_post": true,
+  "risk_level": "low",
+  "reason": "投稿してよい理由またはNG理由",
+  "contains_investment_advice": false,
+  "contains_buy_sell_recommendation": false,
+  "contains_unverified_numbers": false,
+  "too_aggressive": false
+}}
+
+risk_level は "low" / "medium" / "high" のいずれかにしてください。"""
+
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_REVIEW_MODEL,
+            messages=[{"role": "user", "content": review_prompt}],
+            max_completion_tokens=500,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content or "{}"
+        result = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error(f"レビュー結果のJSONパース失敗: {e}")
+        # パース失敗時は安全側に倒して投稿しない
+        return {
+            "ok_to_post": False,
+            "risk_level": "high",
+            "reason": f"レビュー結果のパースに失敗: {e}",
+            "contains_investment_advice": False,
+            "contains_buy_sell_recommendation": False,
+            "contains_unverified_numbers": False,
+            "too_aggressive": False,
+        }
+    except Exception as e:
+        logger.error(f"レビューAPI呼び出し失敗: {e}")
+        return {
+            "ok_to_post": False,
+            "risk_level": "high",
+            "reason": f"レビューAPIエラー: {e}",
+            "contains_investment_advice": False,
+            "contains_buy_sell_recommendation": False,
+            "contains_unverified_numbers": False,
+            "too_aggressive": False,
+        }
+
+    return result
+
+
+# =========================
+# 投稿文生成
+# =========================
+
 def generate_tweet_with_link(item: NewsItem) -> str:
     prompt = build_finance_prompt(item, with_link=True)
-    text = generate_by_claude(prompt, max_tokens=400)
-    tweet = f"{text}\n{item.url}"
-    safety_check(tweet)
-    return tweet
+    text = generate_by_openai(prompt, max_tokens=500)
+    return f"{text}\n{item.url}"
 
 
 def generate_tweet_without_link(item: NewsItem) -> str:
     prompt = build_finance_prompt(item, with_link=False)
-    text = generate_by_claude(prompt, max_tokens=400)
-    safety_check(text)
-    return text
+    return generate_by_openai(prompt, max_tokens=500)
 
 
 def generate_tweet_diagram(item: NewsItem) -> str:
     prompt = build_finance_prompt(item, diagram=True)
-    text = generate_by_claude(prompt, max_tokens=500)
-    safety_check(text)
-    return text
+    return generate_by_openai(prompt, max_tokens=600)
 
+
+def create_tweet(mode: str, item: NewsItem) -> str:
+    if mode == "link":
+        logger.info("リンクあり投稿を生成中...")
+        return generate_tweet_with_link(item)
+    if mode == "diagram":
+        logger.info("図解形式の投稿を生成中...")
+        return generate_tweet_diagram(item)
+    logger.info("リンクなし投稿を生成中...")
+    return generate_tweet_without_link(item)
+
+
+# =========================
+# 投稿
+# =========================
 
 def post_tweet(text: str) -> str:
     client = get_tweepy_client()
@@ -191,19 +322,18 @@ def post_tweet(text: str) -> str:
         raise
 
 
-def create_tweet(mode: str, item: NewsItem) -> str:
-    if mode == "link":
-        logger.info("リンクあり投稿を生成中...")
-        return generate_tweet_with_link(item)
-    if mode == "diagram":
-        logger.info("図解形式の投稿を生成中...")
-        return generate_tweet_diagram(item)
-    logger.info("リンクなし投稿を生成中...")
-    return generate_tweet_without_link(item)
+# =========================
+# メイン
+# =========================
 
-
-def main(mode: str = "diagram") -> None:
+def main(mode: str = "dry-run") -> None:
     logger.info(f"mode: {mode}")
+
+    # 深夜投稿ガード（dry-run以外）
+    if mode != "dry-run" and is_night_time_jst():
+        now_jst = datetime.now(JST).strftime("%H:%M")
+        logger.info(f"深夜帯（JST {now_jst}）のため投稿をスキップします（00:00〜04:29は禁止）")
+        return
 
     posted_urls = get_posted_urls()
     logger.info(f"投稿済みURL数: {len(posted_urls)}")
@@ -218,20 +348,29 @@ def main(mode: str = "diagram") -> None:
 
     tweet = create_tweet(mode, item)
 
-    if mode == "test":
-        logger.info("=== TEST MODE: 投稿文プレビュー（Xには投稿しません） ===")
-        logger.info(tweet)
+    # ① 機械的チェック
+    try:
+        safety_check(tweet)
+    except ValueError as e:
+        logger.error(f"safety_check NG: {e}")
+        logger.info(f"投稿スキップ。生成文:\n{tweet}")
+        return
+
+    # ② AIレビュー
+    review = review_tweet_with_openai(tweet, item.title, item.source)
+    logger.info(f"レビュー結果: {json.dumps(review, ensure_ascii=False)}")
+
+    if not review.get("ok_to_post", False):
+        logger.warning(f"AIレビューにより投稿中止: {review.get('reason', '理由なし')}")
+        logger.info(f"投稿スキップ。生成文:\n{tweet}")
+        return
+
+    # dry-run: 投稿せずプレビュー
+    if mode == "dry-run":
+        logger.info("=== DRY RUN: 投稿はしません ===")
         logger.info(f"文字数: {len(tweet)}")
+        logger.info(f"内容:\n{tweet}")
         return
 
     if mode in ["post", "normal", "link", "diagram"]:
         tweet_id = post_tweet(tweet)
-        add_posted_entry(item, tweet_id=tweet_id, mode=mode)
-        return
-
-    logger.error(f"不明なmodeです: {mode}")
-
-
-if __name__ == "__main__":
-    mode = sys.argv[1] if len(sys.argv) > 1 else "diagram"
-    main(mode)
