@@ -92,9 +92,9 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-- name: Determine post mode
+      - name: Determine post mode
         id: mode
-        if: steps.guard.outputs.skip == 'false'
+        if: ${{ steps.guard.outputs.skip == 'false' }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
@@ -104,14 +104,16 @@ jobs:
 
       - name: Post to X
         id: post
-        if: steps.guard.outputs.skip == 'false'
+        if: ${{ steps.guard.outputs.skip == 'false' }}
         env:
           API_KEY: ${{ secrets.API_KEY }}
           API_KEY_SECRET: ${{ secrets.API_KEY_SECRET }}
           ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
           ACCESS_TOKEN_SECRET: ${{ secrets.ACCESS_TOKEN_SECRET }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: python src/post.py ${{ steps.mode.outputs.mode }}
+        run: |
+          cd src
+          python post.py "${{ steps.mode.outputs.mode }}"
 
       - name: Commit posted history
         if: success() && steps.guard.outputs.skip == 'false' && steps.mode.outputs.mode != 'dry-run'
