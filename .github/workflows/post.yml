@@ -77,7 +77,7 @@ jobs:
           JST_H=$(TZ=Asia/Tokyo date +%H)
           JST_M=$(TZ=Asia/Tokyo date +%M)
           MIN=$((10#$JST_H * 60 + 10#$JST_M))
-          if [ "$MIN" -lt 270 ]; then
+          if [ "$MIN" -lt 270 ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
             echo "深夜帯（JST $JST_H:$JST_M）のため投稿スキップ"
             echo "mode=skip" >> $GITHUB_OUTPUT
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
