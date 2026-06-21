@@ -1,0 +1,36 @@
+name: Weekly Events Post
+
+on:
+  schedule:
+    # 毎週日曜 21:00 JST = 日曜 12:00 UTC（来週月曜分のイベントを投稿）
+    - cron: '0 12 * * 0'
+  workflow_dispatch:   # 手動実行も可
+
+# 同時実行を防ぐ
+concurrency:
+  group: weekly-post
+  cancel-in-progress: false
+
+jobs:
+  weekly-post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Install Japanese fonts
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+      - name: Post weekly events
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+          API_KEY_SECRET: ${{ secrets.API_KEY_SECRET }}
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          ACCESS_TOKEN_SECRET: ${{ secrets.ACCESS_TOKEN_SECRET }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: |
+          cd src
+          python weekly_post.py post
