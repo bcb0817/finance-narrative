@@ -166,6 +166,66 @@ def _fetch_economic(frm: str, to: str) -> list[dict]:
     return out
 
 
+# =====================================================================
+# 公式日程に基づくマクロ指標カレンダー（2026年）
+# 出所: OMB/Executive Office "Schedule of Release Dates for Principal
+#       Federal Economic Indicators for 2026"（BLS/BEA/Census）
+#       + Federal Reserve FOMC calendar
+# 時刻は各指標の標準発表時刻(ET)。BLS/BEA/Census主要指標=8:30 ET、
+# 新築住宅販売=10:00 ET、FOMC声明=14:00 ET。time_et→JSTは normalizer が変換。
+# ※ AIの推測ではなく公式日程の転記。年に1〜数回、公式更新時に見直すこと。
+# =====================================================================
+_MACRO_YEAR = 2026
+# (title, category, time_et, [Jan..Dec の日。0=その月なし], source_name, source_url)
+_MACRO_DEFS = [
+    ("米雇用統計（非農業部門）", "統計", "08:30", [9, 6, 6, 3, 8, 5, 2, 7, 4, 2, 6, 4],
+     "BLS（公式日程）", "https://www.bls.gov/schedule/"),
+    ("米CPI（消費者物価指数）", "統計", "08:30", [13, 11, 11, 10, 12, 10, 14, 12, 11, 14, 10, 10],
+     "BLS（公式日程）", "https://www.bls.gov/schedule/"),
+    ("米PCEデフレーター（個人所得・消費）", "統計", "08:30", [29, 26, 27, 30, 28, 25, 30, 26, 30, 29, 25, 23],
+     "BEA（公式日程）", "https://www.bea.gov/news/schedule"),
+    ("米GDP", "統計", "08:30", [29, 26, 27, 30, 28, 25, 30, 26, 30, 29, 25, 23],
+     "BEA（公式日程）", "https://www.bea.gov/news/schedule"),
+    ("米小売売上高", "統計", "08:30", [15, 17, 16, 16, 14, 17, 16, 14, 16, 15, 17, 16],
+     "Census（公式日程）", "https://www.census.gov/economic-indicators/"),
+    ("米耐久財受注", "統計", "08:30", [28, 26, 25, 24, 28, 25, 27, 26, 25, 27, 25, 23],
+     "Census（公式日程）", "https://www.census.gov/economic-indicators/"),
+    ("米住宅着工件数", "統計", "08:30", [21, 18, 17, 17, 19, 16, 17, 18, 17, 20, 18, 17],
+     "Census（公式日程）", "https://www.census.gov/economic-indicators/"),
+    ("米新築住宅販売件数", "統計", "10:00", [27, 25, 24, 23, 27, 24, 24, 25, 24, 27, 25, 23],
+     "Census（公式日程）", "https://www.census.gov/economic-indicators/"),
+]
+# FOMC 政策金利発表（会合2日目, 14:00 ET）
+_FOMC_DATES = [
+    "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
+    "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
+]
+
+
+def _macro_events() -> list[dict]:
+    """公式日程テーブルから2026年のマクロ指標を生イベント形式で生成（APIキー不要）。"""
+    out: list[dict] = []
+    for title, cat, time_et, days, sname, surl in _MACRO_DEFS:
+        for i, d in enumerate(days):
+            if not d:
+                continue
+            out.append({
+                "date": f"{_MACRO_YEAR}-{i + 1:02d}-{d:02d}",
+                "country": "US", "category": cat, "title": title,
+                "time_et": time_et, "source_name": sname, "source_url": surl,
+                "verified": True,
+            })
+    for ds in _FOMC_DATES:
+        out.append({
+            "date": ds, "country": "US", "category": "中銀",
+            "title": "FOMC（政策金利発表）", "time_et": "14:00",
+            "source_name": "Federal Reserve（公式日程）",
+            "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+            "verified": True,
+        })
+    return out
+
+
 def _coming_monday_jst() -> "datetime.date":
     today = datetime.now(JST).date()
     delta = (0 - today.weekday()) % 7   # 月曜=0。今日が月曜なら今日、それ以外は次の月曜
@@ -188,9 +248,13 @@ def fetch_weekly_events(week_start=None) -> list[dict]:
     to = week_end.strftime("%Y-%m-%d")
 
     raw: list[dict] = []
-    raw += _fetch_economic(frm, to)
-    raw += _fetch_earnings(frm, to)
-    logger.info(f"Finnhub取得合計: {len(raw)}件（取得窓 {frm}〜{to}）")
+    raw += _macro_events()              # 公式マクロ日程（APIキー不要・常時利用可）
+    raw += _fetch_earnings(frm, to)     # Finnhub 決算（無料枠でOK）
+    # 経済指標API(/calendar/economic)は無料枠で403のため既定オフ。
+    # 有料枠で併用したい場合だけ環境変数 FINNHUB_ECON=1 を設定する。
+    if os.getenv("FINNHUB_ECON") == "1":
+        raw += _fetch_economic(frm, to)
+    logger.info(f"イベント取得合計: {len(raw)}件（マクロ+決算, 取得窓 {frm}〜{to}）")
     if not raw:
         return []
 
