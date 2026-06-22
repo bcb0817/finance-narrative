@@ -1,0 +1,44 @@
+name: Weekly Events
+
+on:
+  schedule:
+    - cron: '0 12 * * 0'   # UTC 日12:00 = JST 日21:00（実投稿）
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'image=画像のみ / post=実投稿'
+        required: false
+        default: 'image'
+
+concurrency:
+  group: weekly-events
+  cancel-in-progress: false
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Install Japanese fonts
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+      - name: Run weekly bot
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+          API_KEY_SECRET: ${{ secrets.API_KEY_SECRET }}
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          ACCESS_TOKEN_SECRET: ${{ secrets.ACCESS_TOKEN_SECRET }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: |
+          cd src
+          # scheduleトリガー or action=post なら実投稿、それ以外は画像のみ
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.action }}" = "post" ]; then
+            python weekly_bot/weekly_post.py post
+          else
+            python weekly_bot/weekly_post.py
+          fi

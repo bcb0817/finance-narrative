@@ -8,6 +8,16 @@ weekly_post.py
   （post時のみ OpenAI/レビュー/tweepy を post.py から遅延import）
 """
 
+import os
+import sys
+
+# --- パス・ブートストラップ: src 配下の各機能ディレクトリを import 可能にする ---
+_SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../src
+for _sub in ("common", "news_bot", "weekly_bot", "narrative_bot", "scheduler"):
+    _p = os.path.join(_SRC_DIR, _sub)
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import sys
 import json
 import logging
