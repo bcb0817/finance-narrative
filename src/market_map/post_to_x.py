@@ -1,6 +1,6 @@
 """X(Twitter)への投稿。既存Botと同じ認証情報を想定。
 
-必要な環境変数:
+必要な環境変数(ワークフロー側で既存Secretをマッピングする):
     X_API_KEY
     X_API_SECRET
     X_ACCESS_TOKEN

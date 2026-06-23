@@ -11,13 +11,23 @@ from __future__ import annotations
 import logging
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from io import StringIO
 
 import pandas as pd
+import requests
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
 WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+
+# WikipediaはUser-Agentなしのリクエストを403で弾くため、ブラウザ相当のUAを付ける
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    )
+}
 
 
 def get_sp500_universe() -> pd.DataFrame:
@@ -26,7 +36,10 @@ def get_sp500_universe() -> pd.DataFrame:
     Wikipedia のシンボルは "BRK.B" のように "." を使うが、
     yfinance は "BRK-B" を使うので置換する。
     """
-    tables = pd.read_html(WIKI_SP500_URL)
+    resp = requests.get(WIKI_SP500_URL, headers=_HEADERS, timeout=30)
+    resp.raise_for_status()
+
+    tables = pd.read_html(StringIO(resp.text))
     raw = tables[0]
     df = pd.DataFrame(
         {

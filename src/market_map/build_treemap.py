@@ -104,14 +104,5 @@ def build_treemap(
 # -------------------------------------------------------------------
 # df["logo_url"] にロゴURL(またはローカルパス)を入れておけば、
 # 出力済み PNG を Pillow で開き、各タイル中心にロゴを貼る後処理を追加できる。
-# 例:
-#   from PIL import Image
-#   base = Image.open(out_path).convert("RGBA")
-#   for r in df.itertuples():
-#       if r.logo_url:
-#           logo = Image.open(r.logo_url).convert("RGBA")
-#           # タイル中心座標はタイルの面積比から推定するか、
-#           # plotly の squarify ロジックを別途計算して貼り付ける
-#   base.save(out_path)
 # タイル座標が必要な場合は go.Treemap ではなく squarify ライブラリで
 # レイアウトを自前計算する方式に切り替えると座標を直接得られる。

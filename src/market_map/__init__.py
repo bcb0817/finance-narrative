@@ -37,10 +37,6 @@ def generate_market_map_post(out_path: str = "market_map.png") -> dict:
 
     仕様11: 画像生成に失敗してもBotを落とさない。
     image_path が None の場合、呼び出し側Botは通常投稿にフォールバックすること。
-
-    ※ データ取得自体(yfinance のレート制限など)が失敗すると例外を送出する。
-       Bot側でも generate_market_map_post() 全体を try/except で囲み、
-       失敗時は通常投稿に切り替えることを推奨。
     """
     df = fetch_market_data()
     df, total_change, sector_summary = calculate_market_cap_move(df)
