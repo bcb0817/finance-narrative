@@ -7,12 +7,7 @@ on:
     - cron: '30 12 * * 1-5'   # UTC 12:30 = 米オープン1時間前（夏時間 8:30 ET）
     - cron: '30 13 * * 1-5'   # UTC 13:30 = 米オープン直後（夏時間 9:30 ET）
     - cron: '0 20 * * 1-5'    # UTC 20:00 = 米クローズ直後（夏時間 16:00 ET）
-  workflow_dispatch:
-    inputs:
-      action:
-        description: 'image=画像のみ / post=実投稿'
-        required: false
-        default: 'image'
+  workflow_dispatch:           # 手動実行は常に実投稿（postのみ）
 
 concurrency:
   group: market-narrative
@@ -40,9 +35,5 @@ jobs:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: |
           cd src
-          # スケジュール起動 or 手動でpost指定 → 実投稿。手動のimage等は画像のみ。
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.action }}" = "post" ]; then
-            python narrative_bot/narrative_post.py post
-          else
-            python narrative_bot/narrative_post.py
-          fi
+          # スケジュール・手動ともに実投稿
+          python narrative_bot/narrative_post.py post
