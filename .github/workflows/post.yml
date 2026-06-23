@@ -1,55 +1,68 @@
 name: X Finance Auto Post Bot
 
-# schedule の cron は GitHub Actions 仕様により UTC。
-# コメントの JST は実際の日本時間での実行目安。
-# このファイルは毎日 0:00 JST に reset.yml が自動更新します。
+# 30分間隔・1日48回の固定スケジュール（UTC）。深夜含む24時間。
+# AI審査（assess_market_impact）で市場影響が小さいものは投稿せずスキップする。
 
 on:
   schedule:
-    - cron: '45 19 * * *'  # JST 04:45
-    - cron: '29 20 * * *'  # JST 05:29
-    - cron: '53 20 * * *'  # JST 05:53
-    - cron: '10 21 * * *'  # JST 06:10
-    - cron: '33 21 * * *'  # JST 06:33
-    - cron: '56 21 * * *'  # JST 06:56
-    - cron: '8 22 * * *'  # JST 07:08
-    - cron: '28 22 * * *'  # JST 07:28
-    - cron: '48 22 * * *'  # JST 07:48
-    - cron: '6 23 * * *'  # JST 08:06
-    - cron: '19 23 * * *'  # JST 08:19
-    - cron: '31 23 * * *'  # JST 08:31
-    - cron: '46 23 * * *'  # JST 08:46
-    - cron: '5 2 * * *'  # JST 11:05
-    - cron: '18 2 * * *'  # JST 11:18
+    - cron: '0 0 * * *'  # JST 09:00
+    - cron: '30 0 * * *'  # JST 09:30
+    - cron: '0 1 * * *'  # JST 10:00
+    - cron: '30 1 * * *'  # JST 10:30
+    - cron: '0 2 * * *'  # JST 11:00
     - cron: '30 2 * * *'  # JST 11:30
-    - cron: '56 2 * * *'  # JST 11:56
-    - cron: '11 3 * * *'  # JST 12:11
-    - cron: '31 3 * * *'  # JST 12:31
-    - cron: '44 3 * * *'  # JST 12:44
-    - cron: '10 8 * * *'  # JST 17:10
-    - cron: '33 8 * * *'  # JST 17:33
-    - cron: '49 8 * * *'  # JST 17:49
-    - cron: '17 9 * * *'  # JST 18:17
-    - cron: '35 9 * * *'  # JST 18:35
-    - cron: '47 9 * * *'  # JST 18:47
-    - cron: '15 10 * * *'  # JST 19:15
-    - cron: '28 10 * * *'  # JST 19:28
-    - cron: '45 10 * * *'  # JST 19:45
-    - cron: '5 11 * * *'  # JST 20:05
-    - cron: '19 11 * * *'  # JST 20:19
-    - cron: '35 11 * * *'  # JST 20:35
-    - cron: '52 11 * * *'  # JST 20:52
-    - cron: '16 12 * * *'  # JST 21:16
-    - cron: '33 12 * * *'  # JST 21:33
-    - cron: '57 12 * * *'  # JST 21:57
-    - cron: '25 13 * * *'  # JST 22:25
-    - cron: '49 13 * * *'  # JST 22:49
+    - cron: '0 3 * * *'  # JST 12:00
+    - cron: '30 3 * * *'  # JST 12:30
+    - cron: '0 4 * * *'  # JST 13:00
+    - cron: '30 4 * * *'  # JST 13:30
+    - cron: '0 5 * * *'  # JST 14:00
+    - cron: '30 5 * * *'  # JST 14:30
+    - cron: '0 6 * * *'  # JST 15:00
+    - cron: '30 6 * * *'  # JST 15:30
+    - cron: '0 7 * * *'  # JST 16:00
+    - cron: '30 7 * * *'  # JST 16:30
+    - cron: '0 8 * * *'  # JST 17:00
+    - cron: '30 8 * * *'  # JST 17:30
+    - cron: '0 9 * * *'  # JST 18:00
+    - cron: '30 9 * * *'  # JST 18:30
+    - cron: '0 10 * * *'  # JST 19:00
+    - cron: '30 10 * * *'  # JST 19:30
+    - cron: '0 11 * * *'  # JST 20:00
+    - cron: '30 11 * * *'  # JST 20:30
+    - cron: '0 12 * * *'  # JST 21:00
+    - cron: '30 12 * * *'  # JST 21:30
+    - cron: '0 13 * * *'  # JST 22:00
+    - cron: '30 13 * * *'  # JST 22:30
+    - cron: '0 14 * * *'  # JST 23:00
+    - cron: '30 14 * * *'  # JST 23:30
+    - cron: '0 15 * * *'  # JST 00:00
+    - cron: '30 15 * * *'  # JST 00:30
+    - cron: '0 16 * * *'  # JST 01:00
+    - cron: '30 16 * * *'  # JST 01:30
+    - cron: '0 17 * * *'  # JST 02:00
+    - cron: '30 17 * * *'  # JST 02:30
+    - cron: '0 18 * * *'  # JST 03:00
+    - cron: '30 18 * * *'  # JST 03:30
+    - cron: '0 19 * * *'  # JST 04:00
+    - cron: '30 19 * * *'  # JST 04:30
+    - cron: '0 20 * * *'  # JST 05:00
+    - cron: '30 20 * * *'  # JST 05:30
+    - cron: '0 21 * * *'  # JST 06:00
+    - cron: '30 21 * * *'  # JST 06:30
+    - cron: '0 22 * * *'  # JST 07:00
+    - cron: '30 22 * * *'  # JST 07:30
+    - cron: '0 23 * * *'  # JST 08:00
+    - cron: '30 23 * * *'  # JST 08:30
   workflow_dispatch:
     inputs:
       mode:
-        description: '投稿モード（link / normal / diagram / image / dry-run）'
+        description: '投稿モード（image / diagram）'
         required: false
-        default: 'dry-run'
+        default: 'image'
+        type: choice
+        options:
+          - image
+          - diagram
 
 concurrency:
   group: x-finance-auto-post-bot
@@ -77,23 +90,10 @@ jobs:
       - name: Install Japanese fonts
         run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
 
-      - name: Debug time info
-        run: |
-          echo "UTC now : $(date -u '+%Y-%m-%d %H:%M:%S')"
-          echo "JST now : $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S')"
-          echo "Event   : ${{ github.event_name }}"
-          echo "SHA     : ${{ github.sha }}"
-
       - name: Determine post mode
         id: mode
         run: |
-          JST_H=$(TZ=Asia/Tokyo date +%H)
-          JST_M=$(TZ=Asia/Tokyo date +%M)
-          MIN=$((10#$JST_H * 60 + 10#$JST_M))
-          if [ "$MIN" -lt 270 ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
-            echo "深夜帯（JST $JST_H:$JST_M）のため投稿スキップ"
-            echo "mode=skip" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
           else
             # image と diagram を 50/50 でランダム振り分け
@@ -106,7 +106,6 @@ jobs:
 
       - name: Post to X
         id: post
-        if: steps.mode.outputs.mode != 'skip'
         env:
           API_KEY: ${{ secrets.API_KEY }}
           API_KEY_SECRET: ${{ secrets.API_KEY_SECRET }}
@@ -118,7 +117,7 @@ jobs:
           python news_bot/post.py "${{ steps.mode.outputs.mode }}"
 
       - name: Commit posted history
-        if: success() && steps.mode.outputs.mode != 'skip' && steps.mode.outputs.mode != 'dry-run'
+        if: success()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
