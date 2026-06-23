@@ -7,12 +7,13 @@ market_narrative.py
 影響する材料だけを採用し、ローカル/話題性のみ/日本ローカルは無視する。
 
 AIには取得済みシグナルだけを渡し、存在しないニュース・銘柄・数値を作らせない。
-出力JSON:
-  narratives : 市場ナラティブTOP3
-    [{theme, whats_happening, why_market_cares, tickers[], stance, impact(1-10)}]
-  top_theme  : 今日の最重要テーマ {conclusion, rationale, tickers[]}
-  x_post     : X投稿案（120字以内・結論先・株価影響明記・平易・煽らない）
-  post_value : 投稿価値(1-10)。8未満は投稿しない
+複数のナラティブ候補を抽出し、最も投稿価値・市場インパクトが大きい1つ
+（top_narrative）だけを選んで画像化・投稿する。3カード表示・最重要テーマ欄は廃止。
+
+出力JSON: candidates[] （各候補は以下を持つ）
+  title, stance(強気/弱気/中立), impact(1-10), post_value(1-10),
+  what(80-120字), why(80-120字), market_effect(60-100字),
+  watch_points[](3点以内), tickers[], source_titles[]
 """
 
 import json
@@ -109,25 +110,24 @@ def _build_prompt(signals: dict) -> str:
 ■Reddit議論（話題性）:
 {reddit}
 
+市場ナラティブの「候補」を複数（2〜5件）抽出してください。最終的に画像化するのは
+最も価値の高い1件だけですが、ここでは候補を出し切ってください。
 以下のJSONのみを返す（説明文・Markdown禁止）。日本語で記述。
 {{
-  "narratives": [
+  "candidates": [
     {{
-      "theme": "テーマ名（簡潔に）",
-      "whats_happening": "何が起きているか（取得シグナルに基づく）",
-      "why_market_cares": "なぜ市場が気にしているか",
-      "tickers": ["影響銘柄のティッカー（シグナルから読み取れる範囲。無ければ空配列）"],
+      "title": "テーマ名（簡潔に）",
       "stance": "強気" or "弱気" or "中立",
-      "impact": 1〜10の整数
+      "impact": 1〜10の整数,
+      "post_value": 1〜10の整数,
+      "what": "何が起きているか（80〜120字、取得シグナルに基づく）",
+      "why": "なぜ重要か（80〜120字）",
+      "market_effect": "市場への影響（60〜100字、どのセクター/資産にどう効くか）",
+      "watch_points": ["見るべきポイント（3点以内、各短く）"],
+      "tickers": ["影響銘柄のティッカー（シグナルから読み取れる範囲。無ければ空配列）"],
+      "source_titles": ["根拠にした取得シグナルのタイトル（実在するものだけ）"]
     }}
-  ],
-  "top_theme": {{
-    "conclusion": "今日の最重要テーマの結論（1〜2文）",
-    "rationale": "根拠（取得シグナルに基づく）",
-    "tickers": ["注目銘柄"]
-  }},
-  "x_post": "X投稿案。120文字以内。結論から書く。株価への影響を明記。専門用語を減らす。煽らない。投資助言・断定的予測・『買え/売れ/爆益/暴落確定/確実』は禁止。",
-  "post_value": 1〜10の整数
+  ]
 }}
 
 【post_value 基準（厳格に適用）】
@@ -140,18 +140,112 @@ def _build_prompt(signals: dict) -> str:
 
 【post_value を 8 未満（投稿しない側）に下げるべきケース】
 次のいずれかに当てはまるなら、たとえ話題性があっても 7 以下にする：
-- 根拠のない因果の断定がある（「Aが原因でBが起きた」と取得シグナルで裏づけられない）
+- 根拠のない因果の断定がある（取得シグナルで裏づけられない）
 - 取得シグナルに無い市場解説を作っている（出所のない解釈の追加）
 - 投資助言・推奨に見える表現がある
 - 市場への影響が弱い、または局所的（個別株・地方・ニッチ）
 - 出所不明の材料を中心に組み立てている
-narratives は最大3件。impact/post_value は取得シグナルの実態に対して誠実に。
-シグナルが弱い日は無理にテーマを作らず、post_value を低く（投稿不要）してよい。
+各項目の文字数目安（超過しない）：what 80〜120字 / why 80〜120字 /
+market_effect 60〜100字 / watch_points は3点以内。
 投稿数より質を優先し、迷ったら低めに採点すること。"""
 
 
+# 米国株指数・金利・ドル・半導体・大型テックに関わるキーワード（優先順位3用）
+_PRIORITY_KEYWORDS = [
+    "s&p", "sp500", "s&p500", "nasdaq", "ナスダック", "ダウ", "指数",
+    "金利", "利上げ", "利下げ", "fed", "frb", "fomc", "国債", "利回り",
+    "ドル", "為替", "dxy",
+    "半導体", "semiconductor", "chip", "nvda", "nvidia", "micron", "mu", "amd", "avgo", "tsm",
+    "apple", "microsoft", "google", "amazon", "meta", "tesla", "大型テック", "メガキャップ",
+]
+
+
+def _affects_core_market(c: dict) -> bool:
+    text = " ".join([
+        c.get("title", ""), c.get("what", ""), c.get("why", ""),
+        c.get("market_effect", ""), " ".join(c.get("tickers", []) or []),
+    ]).lower()
+    return any(k in text for k in _PRIORITY_KEYWORDS)
+
+
+def select_top_narrative(candidates: list[dict]) -> tuple[dict | None, list[dict]]:
+    """
+    候補から優先順位で top_narrative を1つ選ぶ。
+    優先順位:
+      1. post_value 最大
+      2. impact 最大
+      3. 米国株指数/金利/ドル/半導体/大型テックに影響しやすい
+      4. source_titles が複数
+      5. 根拠が明確（source_titles と market_effect が埋まっている）
+    戻り値: (top_narrative or None, rejected[{title, reason}])
+    """
+    if not candidates:
+        return None, []
+
+    def sort_key(c: dict):
+        return (
+            int(c.get("post_value", 0)),                 # 1
+            int(c.get("impact", 0)),                      # 2
+            1 if _affects_core_market(c) else 0,          # 3
+            len(c.get("source_titles", []) or []),        # 4
+            1 if (c.get("source_titles") and c.get("market_effect")) else 0,  # 5
+        )
+
+    ranked = sorted(candidates, key=sort_key, reverse=True)
+    top = ranked[0]
+    rejected = []
+    for c in ranked[1:]:
+        reasons = []
+        if int(c.get("post_value", 0)) < int(top.get("post_value", 0)):
+            reasons.append(f"post_value低い({c.get('post_value')}<{top.get('post_value')})")
+        elif int(c.get("impact", 0)) < int(top.get("impact", 0)):
+            reasons.append(f"impact低い({c.get('impact')}<{top.get('impact')})")
+        elif _affects_core_market(top) and not _affects_core_market(c):
+            reasons.append("主要市場(指数/金利/半導体等)への影響がtopより弱い")
+        elif len(c.get("source_titles", []) or []) < len(top.get("source_titles", []) or []):
+            reasons.append("根拠ソースがtopより少ない")
+        else:
+            reasons.append("総合優先度でtopに劣る")
+        rejected.append({"title": c.get("title", ""), "reason": " / ".join(reasons)})
+    return top, rejected
+
+
+def _clip(s: str, n: int) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _normalize_candidate(c: dict) -> dict:
+    c.setdefault("title", "")
+    c["stance"] = c.get("stance", "中立")
+    try:
+        c["impact"] = int(c.get("impact", 0))
+    except Exception:
+        c["impact"] = 0
+    try:
+        c["post_value"] = int(c.get("post_value", 0))
+    except Exception:
+        c["post_value"] = 0
+    c["what"] = _clip(c.get("what", ""), 120)
+    c["why"] = _clip(c.get("why", ""), 120)
+    c["market_effect"] = _clip(c.get("market_effect", ""), 100)
+    wp = c.get("watch_points", []) or []
+    c["watch_points"] = [_clip(w, 40) for w in wp[:3]]
+    c["tickers"] = (c.get("tickers", []) or [])[:6]
+    c["source_titles"] = c.get("source_titles", []) or []
+    return c
+
+
+def build_caption(top: dict) -> str:
+    """top_narrative から X投稿本文を組み立てる（120字以内・結論先・煽らない）。"""
+    title = top.get("title", "").strip()
+    effect = top.get("market_effect", "").strip()
+    caption = f"【{title}】{effect}" if title else effect
+    return _clip(caption, X_POST_MAX)
+
+
 def analyze_market(signals: dict | None = None) -> dict:
-    """編集長AIで①〜④を生成して返す。"""
+    """編集長AIで候補を生成し、正規化して返す。{'candidates':[...]}"""
     from post import get_openai_client, OPENAI_GENERATE_MODEL
 
     if signals is None:
@@ -167,18 +261,6 @@ def analyze_market(signals: dict | None = None) -> dict:
         reasoning_effort="minimal",
     )
     data = json.loads(resp.choices[0].message.content or "{}")
-
-    # 正規化・防御
-    data.setdefault("narratives", [])
-    data["narratives"] = data["narratives"][:3]
-    data.setdefault("top_theme", {"conclusion": "", "rationale": "", "tickers": []})
-    data.setdefault("x_post", "")
-    data.setdefault("post_value", 0)
-    try:
-        data["post_value"] = int(data["post_value"])
-    except Exception:
-        data["post_value"] = 0
-    # X投稿は120字以内に
-    if len(data["x_post"]) > X_POST_MAX:
-        data["x_post"] = data["x_post"][:X_POST_MAX - 1].rstrip() + "…"
-    return data
+    cands = data.get("candidates", []) or []
+    cands = [_normalize_candidate(c) for c in cands if isinstance(c, dict)]
+    return {"candidates": cands}

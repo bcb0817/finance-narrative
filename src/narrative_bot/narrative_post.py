@@ -4,11 +4,12 @@ narrative_post.py
 
 フロー:
   1. 4ソース集約（gather_signals）
-  2. 編集長AIで①〜④生成（analyze_market）
-  3. ④ post_value < 8 なら投稿しない（ゲート）
-  4. ①②を画像化（render_narrative）
-  5. ③ X投稿案をレビュー（review_tweet_with_openai）
-  6. 画像＋③で投稿（post_tweet_with_image）
+  2. 編集長AIで複数ナラティブ候補を生成（analyze_market → candidates）
+  3. 優先順位で top_narrative を1つ選定（select_top_narrative）
+  4. top の post_value < 8 なら画像生成前にスキップ（ゲート）
+  5. top_narrative 1件だけを画像化（render_narrative）
+  6. top_narrative 本文だけをレビュー（review_tweet_with_openai）
+  7. 画像＋キャプションで投稿（post_tweet_with_image）
 
   画像生成のみ: python narrative_post.py
   実投稿:       python narrative_post.py post
@@ -28,7 +29,10 @@ import sys
 import json
 import logging
 
-from market_narrative import gather_signals, analyze_market, POST_VALUE_THRESHOLD, X_POST_MAX
+from market_narrative import (
+    gather_signals, analyze_market, select_top_narrative, build_caption,
+    POST_VALUE_THRESHOLD, X_POST_MAX,
+)
 from narrative_renderer import render_narrative
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -37,14 +41,12 @@ logger = logging.getLogger(__name__)
 OUT_PATH = "/tmp/narrative.png"
 
 
-def _log_analysis(a: dict) -> None:
-    logger.info("post_value=%s（閾値=%d）", a.get("post_value"), POST_VALUE_THRESHOLD)
-    for i, n in enumerate(a.get("narratives", []), 1):
-        logger.info("narrative#%d: %s / stance=%s / impact=%s / tickers=%s",
-                    i, n.get("theme"), n.get("stance"), n.get("impact"),
-                    ",".join(n.get("tickers", []) or []))
-    logger.info("top_theme=%s", (a.get("top_theme", {}) or {}).get("conclusion", ""))
-    logger.info("x_post=%r (len=%d)", a.get("x_post", ""), len(a.get("x_post", "")))
+def _log_top(top: dict) -> None:
+    logger.info(
+        "selected top_narrative: title=%r / post_value=%s / impact=%s / stance=%s / tickers=%s",
+        top.get("title"), top.get("post_value"), top.get("impact"),
+        top.get("stance"), ",".join(top.get("tickers", []) or []),
+    )
 
 
 from datetime import datetime, timezone, timedelta
@@ -95,44 +97,59 @@ def run_narrative(post: bool = False, out_path: str = OUT_PATH):
         return None
 
     analysis = analyze_market(signals)
-    _log_analysis(analysis)
+    candidates = analysis.get("candidates", []) or []
+    logger.info(f"candidate narratives count={len(candidates)}")
+    if not candidates:
+        logger.info("候補ナラティブが0件のため投稿しません。 should_post=false")
+        return None
 
-    # ===== ④ 投稿価値ゲート（早期スキップ：画像生成より前で判定しコスト削減）=====
-    post_value = int(analysis.get("post_value", 0))
+    # ===== 優先順位で top_narrative を1つ選定 =====
+    top, rejected = select_top_narrative(candidates)
+    _log_top(top)
+    for r in rejected:
+        logger.info("rejected narrative: title=%r / reason=%s", r["title"], r["reason"])
+
+    # ===== 投稿価値ゲート（top の post_value で判定。8未満は描画前に終了）=====
+    post_value = int(top.get("post_value", 0))
+    impact = int(top.get("impact", 0))
     should_post = post_value >= POST_VALUE_THRESHOLD
     skip_reason = "" if should_post else "投稿価値が基準未満"
     logger.info(
-        f"post_value={post_value} / threshold={POST_VALUE_THRESHOLD} / "
+        f"post_value={post_value} / impact={impact} / threshold={POST_VALUE_THRESHOLD} / "
         f"should_post={str(should_post).lower()} / skip_reason={skip_reason or '-'}"
     )
     if not should_post:
-        logger.info(
-            f"post_value={post_value}（閾値={POST_VALUE_THRESHOLD}）のため投稿スキップ"
-        )
+        logger.info(f"post_value={post_value}（閾値={POST_VALUE_THRESHOLD}）のため投稿スキップ")
         return None   # 画像生成・X投稿に進まず即終了（OpenAIコスト削減）
 
-    image_path = render_narrative(analysis, out_path)
+    # ===== top_narrative だけを画像化 =====
+    image_path = render_narrative(top, out_path)
 
     if not post:
         logger.info("画像生成のみ（postモードではないため投稿しません）")
         return image_path
 
-    # ===== ③ X投稿（レビュー後）=====
+    # ===== X投稿（top_narrative だけをレビュー対象にする）=====
     from post import review_tweet_with_openai, post_tweet_with_image, NG_WORDS
 
-    caption = analysis.get("x_post", "").strip()
-    if len(caption) > X_POST_MAX:
-        caption = caption[:X_POST_MAX - 1].rstrip() + "…"
+    caption = build_caption(top)
     if not caption:
         logger.warning("X投稿案が空のため投稿中止")
         return None
+    if len(caption) > X_POST_MAX:
+        caption = caption[:X_POST_MAX - 1].rstrip() + "…"
 
     for w in NG_WORDS:
         if w in caption:
             logger.warning(f"NGワード検出のため投稿中止: {w}")
             return None
 
-    review = review_tweet_with_openai(caption, "市場ナラティブ（編集長レイヤー）", "複数ソース集約")
+    # レビュー対象は最終的に画像化する top_narrative の本文のみ
+    review_text = (
+        f"{top.get('title','')}。{top.get('what','')} "
+        f"{top.get('why','')} {top.get('market_effect','')}"
+    ).strip()
+    review = review_tweet_with_openai(review_text, top.get("title", ""), "市場ナラティブ（top_narrative）")
     logger.info("review_result=%s", json.dumps(review, ensure_ascii=False))
     if not review.get("ok_to_post", False):
         logger.warning(f"AIレビューにより投稿中止: {review.get('reason','理由なし')}")

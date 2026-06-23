@@ -1,27 +1,26 @@
 """
 narrative_renderer.py
-市場ナラティブTOP3＋今日の最重要テーマを1枚のPNG画像に描画する（Pillow/ダーク）。
+「今日の市場ナラティブ」を1枚のPNGに描画する（Pillow/ダーク）。
+top_narrative 1件のみを表示する。3カード表示・最重要テーマ欄は廃止。
 
-入力 analysis dict:
-  narratives: [{theme, whats_happening, why_market_cares, tickers[], stance, impact}]
-  top_theme : {conclusion, rationale, tickers[]}
-  post_value: int
+入力 top dict:
+  title, stance, impact, post_value,
+  what, why, market_effect, watch_points[], tickers[]
 """
 
 import os
 from PIL import Image, ImageDraw, ImageFont
 
-BG        = (13, 17, 23)
-CARD_BG   = (22, 27, 34)
-THEME_BG  = (24, 30, 40)
-LINE      = (48, 54, 61)
-TEXT      = (230, 237, 243)
-SUBTLE    = (139, 148, 158)
-ACCENT    = (45, 212, 191)
-RED       = (248, 81, 73)
-GREEN     = (63, 185, 80)
-AMBER     = (210, 153, 34)
-CHIP_BG   = (33, 38, 45)
+BG       = (13, 17, 23)
+CARD_BG  = (22, 27, 34)
+LINE     = (48, 54, 61)
+TEXT     = (230, 237, 243)
+SUBTLE   = (139, 148, 158)
+ACCENT   = (45, 212, 191)
+RED      = (248, 81, 73)
+GREEN    = (63, 185, 80)
+AMBER    = (210, 153, 34)
+CHIP_BG  = (33, 38, 45)
 
 STANCE = {
     "強気": (63, 185, 80),
@@ -34,7 +33,6 @@ FONT_BLK = "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc"
 
 W = 1080
 PAD = 48
-CANVAS_H = 5000
 
 
 def _f(size, bold=False):
@@ -65,121 +63,87 @@ def _chip(d, x, y, text, font):
     return w + 22 + 10
 
 
-def _impact_bar(d, x, y, impact, w=260, h=14):
-    impact = max(0, min(10, int(impact)))
-    d.rounded_rectangle([x, y, x + w, y + h], radius=7, fill=(40, 46, 54))
-    fill_w = int(w * impact / 10)
-    color = RED if impact >= 8 else AMBER if impact >= 5 else SUBTLE
-    if fill_w > 0:
-        d.rounded_rectangle([x, y, x + fill_w, y + h], radius=7, fill=color)
-
-
-def render_narrative(analysis: dict, out_path: str) -> str:
-    img = Image.new("RGB", (W, CANVAS_H), BG)
+def render_narrative(top: dict, out_path: str) -> str:
+    """top_narrative 1件をカード1枚で描画。"""
+    img = Image.new("RGB", (W, 2200), BG)
     d = ImageDraw.Draw(img)
 
-    f_h1 = _f(46, True)
-    f_meta = _f(26)
-    f_theme = _f(34, True)
-    f_label = _f(22, True)
-    f_body = _f(27)
-    f_chip = _f(22)
-    f_small = _f(23)
+    f_h1    = _f(44, True)
+    f_meta  = _f(26)
+    f_theme = _f(38, True)
+    f_label = _f(24, True)
+    f_body  = _f(28)
+    f_chip  = _f(24)
+    f_small = _f(24)
 
     y = PAD
     d.text((PAD, y), "市場ナラティブ", font=f_h1, fill=TEXT)
-    pv = analysis.get("post_value", "")
+    pv = top.get("post_value", "")
     meta = f"投稿価値 {pv}/10"
     mw = d.textlength(meta, font=f_meta)
-    d.text((W - PAD - mw, y + 12), meta, font=f_meta, fill=SUBTLE)
-    y += 66
+    d.text((W - PAD - mw, y + 10), meta, font=f_meta, fill=SUBTLE)
+    y += 62
     d.line([PAD, y, W - PAD, y], fill=ACCENT, width=3)
-    y += 24
+    y += 22
 
-    body_w = W - PAD * 2 - 36
+    card_top = y
+    inner = PAD + 22
+    body_w = W - PAD * 2 - 44
+    cy = y + 22
 
-    # ===== ① ナラティブTOP3 =====
-    for i, n in enumerate(analysis.get("narratives", [])[:3], 1):
-        card_top = y
-        inner = PAD + 18
-        cy = y + 18
+    stance = top.get("stance", "中立")
+    scol = STANCE.get(stance, SUBTLE)
+    bw = d.textlength(stance, font=f_label) + 28
+    d.rounded_rectangle([W - PAD - 22 - bw, cy, W - PAD - 22, cy + 38], radius=9, fill=scol)
+    d.text((W - PAD - 22 - bw + 14, cy + 6), stance, font=f_label, fill=(8, 12, 14))
+    d.text((inner, cy), "テーマ", font=f_small, fill=ACCENT)
+    cy += 34
+    for ln in _wrap(d, top.get("title", ""), f_theme, body_w - 140):
+        d.text((inner, cy), ln, font=f_theme, fill=TEXT)
+        cy += 50
+    cy += 8
 
-        # テーマ + スタンスバッジ
-        stance = n.get("stance", "中立")
-        scol = STANCE.get(stance, SUBTLE)
-        theme = f'{i}. {n.get("theme","")}'
-        for ln in _wrap(d, theme, f_theme, body_w - 140):
-            d.text((inner, cy), ln, font=f_theme, fill=TEXT)
-            cy += 44
-        # スタンスバッジ（右上）
-        bw = d.textlength(stance, font=f_label) + 28
-        d.rounded_rectangle([W - PAD - 18 - bw, y + 18, W - PAD - 18, y + 18 + 36], radius=9, fill=scol)
-        d.text((W - PAD - 18 - bw + 14, y + 24), stance, font=f_label, fill=(8, 12, 14))
-
-        # 影響度バー
-        d.text((inner, cy + 2), "影響度", font=f_small, fill=SUBTLE)
-        _impact_bar(d, inner + 78, cy + 6, n.get("impact", 0))
-        d.text((inner + 78 + 270, cy), f'{n.get("impact","-")}/10', font=f_small, fill=TEXT)
-        cy += 38
-
-        # 何が起きているか / なぜ気にするか
-        for label, key in (("何が:", "whats_happening"), ("なぜ:", "why_market_cares")):
-            d.text((inner, cy), label, font=f_small, fill=ACCENT)
-            lines = _wrap(d, n.get(key, ""), f_body, body_w - 70)
-            for j, ln in enumerate(lines):
-                d.text((inner + 64, cy), ln, font=f_body, fill=TEXT)
-                cy += 36
-            cy += 4
-
-        # 影響銘柄チップ
-        tickers = n.get("tickers", []) or []
-        if tickers:
-            d.text((inner, cy + 4), "銘柄:", font=f_small, fill=ACCENT)
-            cx = inner + 64
-            for t in tickers[:8]:
-                cx += _chip(d, cx, cy, str(t), f_chip)
-                if cx > W - PAD - 120:
-                    break
-            cy += 42
-
-        card_bottom = cy + 12
-        # カード枠（背景を後ろに敷けないので枠線で表現）
-        d.rounded_rectangle([PAD, card_top, W - PAD, card_bottom], radius=12, outline=LINE, width=1)
-        y = card_bottom + 18
-
-    # ===== ② 今日の最重要テーマ =====
-    tt = analysis.get("top_theme", {}) or {}
-    box_top = y
-    inner = PAD + 18
-    cy = y + 18
-    d.text((inner, cy), "★ 今日の最重要テーマ", font=f_theme, fill=AMBER)
-    cy += 48
-    d.text((inner, cy), "結論:", font=f_small, fill=ACCENT)
-    for ln in _wrap(d, tt.get("conclusion", ""), f_body, body_w - 70):
-        d.text((inner + 64, cy), ln, font=f_body, fill=TEXT)
+    def section(label, text, color=TEXT):
+        nonlocal cy
+        d.text((inner, cy), label, font=f_label, fill=ACCENT)
         cy += 36
-    cy += 6
-    d.text((inner, cy), "根拠:", font=f_small, fill=ACCENT)
-    for ln in _wrap(d, tt.get("rationale", ""), f_body, body_w - 70):
-        d.text((inner + 64, cy), ln, font=f_body, fill=TEXT)
+        for ln in _wrap(d, text, f_body, body_w):
+            d.text((inner, cy), ln, font=f_body, fill=color)
+            cy += 38
+        cy += 12
+
+    section("何が起きているか", top.get("what", ""))
+    section("なぜ重要か", top.get("why", ""))
+    section("市場への影響", top.get("market_effect", ""))
+
+    wps = (top.get("watch_points", []) or [])[:3]
+    if wps:
+        d.text((inner, cy), "見るべきポイント", font=f_label, fill=ACCENT)
         cy += 36
-    cy += 6
-    tickers = tt.get("tickers", []) or []
+        for w in wps:
+            d.text((inner + 6, cy), "・", font=f_body, fill=ACCENT)
+            for j, ln in enumerate(_wrap(d, w, f_body, body_w - 30)):
+                d.text((inner + 34, cy), ln, font=f_body, fill=TEXT)
+                cy += 38
+        cy += 12
+
+    tickers = top.get("tickers", []) or []
     if tickers:
-        d.text((inner, cy + 4), "注目:", font=f_small, fill=ACCENT)
-        cx = inner + 64
-        for t in tickers[:8]:
+        d.text((inner, cy), "関連銘柄", font=f_label, fill=ACCENT)
+        cy += 36
+        cx = inner
+        for t in tickers[:6]:
             cx += _chip(d, cx, cy, str(t), f_chip)
-            if cx > W - PAD - 120:
+            if cx > W - PAD - 140:
                 break
-        cy += 42
-    box_bottom = cy + 12
-    d.rounded_rectangle([PAD, box_top, W - PAD, box_bottom], radius=12, outline=AMBER, width=2)
-    y = box_bottom + 24
+        cy += 50
 
-    d.text((PAD, y), "※市場全体・主要セクターに影響する材料のみ抽出（出所:ニュース/指標/決算/Reddit）",
-           font=f_small, fill=SUBTLE)
-    y += 44
+    card_bottom = cy + 10
+    d.rounded_rectangle([PAD, card_top, W - PAD, card_bottom], radius=14, outline=LINE, width=1)
+    y = card_bottom + 20
+
+    d.text((PAD, y), "※市場全体・主要セクターに影響する材料のみ抽出", font=f_small, fill=SUBTLE)
+    y += 42
 
     img = img.crop((0, 0, W, int(y)))
     img.save(out_path)
