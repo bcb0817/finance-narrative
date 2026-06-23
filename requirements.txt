@@ -9,3 +9,5 @@ kaleido
 tweepy
 lxml
 requests
+squarify
+Pillow
