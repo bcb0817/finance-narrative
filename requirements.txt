@@ -8,3 +8,4 @@ plotly
 kaleido
 tweepy
 lxml
+requests
