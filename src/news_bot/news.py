@@ -81,6 +81,76 @@ FINANCE_KEYWORDS: list[str] = [
 ]
 
 
+# =========================================================
+# 優先テーマ（米国株インパクト最重視）。一致したものは強めに加点。
+# FRB/金利/ドル/PCE・CPI・雇用・GDP・ISM/指数/半導体・AI/大型テック/
+# 主要決算/原油・エネルギー/地政学
+# =========================================================
+PRIORITY_THEME_KEYWORDS: list[str] = [
+    "fed", "frb", "fomc", "powell", "利上げ", "利下げ", "rate cut", "rate hike",
+    "金利", "yield", "国債", "treasury", "ドル", "dollar", "dxy", "為替",
+    "pce", "cpi", "ppi", "inflation", "雇用", "payroll", "jobs", "unemployment",
+    "gdp", "ism", "pmi", "retail sales",
+    "nasdaq", "ナスダック", "s&p", "sp500", "s&p500", "dow", "ダウ", "指数",
+    "semiconductor", "半導体", "chip", "ai", "人工知能",
+    "nvidia", "nvda", "amd", "avgo", "broadcom", "micron", "tsmc", "tsm", "asml",
+    "apple", "aapl", "microsoft", "msft", "google", "googl", "alphabet",
+    "amazon", "amzn", "meta", "tesla", "tsla", "大型テック", "megacap", "メガキャップ",
+    "earnings", "決算", "guidance", "ガイダンス",
+    "oil", "crude", "原油", "opec", "energy", "エネルギー", "天然ガス", "natural gas",
+    "地政学", "geopolitic", "中東", "ロシア", "中国", "台湾", "関税", "tariff", "制裁",
+]
+
+# 加点重み（priority + group + finance + theme）
+PRIORITY_THEME_BONUS = 3.0
+
+
+# =========================================================
+# 除外フィルタ：米国株への影響が薄い / 出所不明 / 中身が薄いものを落とす。
+#   - 東京都区部CPI、東京市場コメント（日本ローカル）
+#   - 小型株の単独 8-K / SEC提出通知だけ
+#   - 低インパクトIR、出所不明の市場コメント
+#   - 「〇〇が発表」「市場は注目」だけのフィラー見出し
+# =========================================================
+import re as _re
+
+# タイトルに含まれていたら即除外（日本ローカル・出所不明系）
+EXCLUDE_TITLE_PATTERNS: list[str] = [
+    r"東京都区部",                 # 東京都区部CPI
+    r"東京.*(市場|相場).*(コメント|まとめ|寄り付き|大引け)",
+    r"(tokyo)\s+(cpi|core cpi)",
+    r"日経平均(寄り|大引|前場|後場)",
+    r"出所不明", r"うわさ", r"噂",
+]
+
+# 単独提出通知だけ（背景説明が無い 8-K/SEC filing のみ）を示す型
+_FILING_ONLY = _re.compile(
+    r"(8-?k|6-?k|s-?1|424b|13[dgf]|form\s+\d|sec\s+filing|提出(を|し|の)?(通知|完了)?)",
+    _re.IGNORECASE,
+)
+# フィラー（中身が薄い）見出しの型
+_FILLER = _re.compile(
+    r"(が発表|を発表|発表した|market\s+(eyes|watch(es)?|focus)|"
+    r"市場は注目|注目集める|話題に|まとめ|ランキング速報)",
+    _re.IGNORECASE,
+)
+
+
+def is_excluded(title: str, source_group: str = "market_news") -> tuple[bool, str]:
+    """米国株への価値が低い見出しを除外する。戻り値: (除外するか, 理由)。"""
+    t = (title or "").strip()
+    low = t.lower()
+    for pat in EXCLUDE_TITLE_PATTERNS:
+        if _re.search(pat, t, _re.IGNORECASE):
+            return True, f"excluded_local_or_unsourced({pat})"
+    # 提出通知だけ、かつ背景語が薄い → 除外（company_filings に多い）
+    if _FILING_ONLY.search(low):
+        return True, "excluded_bare_filing(8-K/SEC等の提出通知のみ)"
+    if _FILLER.search(low):
+        return True, "excluded_filler(発表/注目だけの薄い見出し)"
+    return False, ""
+
+
 @dataclass
 class NewsItem:
     title: str
@@ -135,6 +205,11 @@ def fetch_feed(name: str, cfg: dict) -> list[NewsItem]:
             published = entry.get("published", "") or entry.get("updated", "")
 
             if not title or not link:
+                continue
+
+            excluded, ex_reason = is_excluded(title, group)
+            if excluded:
+                logger.info(f"除外: {ex_reason} :: {title[:60]}")
                 continue
 
             items.append(NewsItem(
@@ -207,12 +282,15 @@ def is_recent(item: NewsItem, hours: int = 24) -> bool:
 
 
 def score_item(item: NewsItem) -> float:
-    """priority + group加点 + キーワード一致でスコアリング"""
+    """priority + group加点 + キーワード一致 + 優先テーマ加点でスコアリング"""
     score = float(item.priority) + GROUP_SCORE.get(item.source_group, 0.0)
     text = (item.title + " " + item.source).lower()
     for keyword in FINANCE_KEYWORDS:
         if keyword.lower() in text:
             score += 0.5
+    # 優先テーマ（FRB/金利/ドル/指標/指数/半導体・AI/大型テック/決算/原油/地政学）
+    if any(k in text for k in PRIORITY_THEME_KEYWORDS):
+        score += PRIORITY_THEME_BONUS
     return score
 
 
