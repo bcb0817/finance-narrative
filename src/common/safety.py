@@ -4,8 +4,22 @@ common/safety.py
 """
 
 from datetime import datetime, timezone, timedelta
+import os
+import re
 
-MAX_POST_LENGTH = 280
+MAX_POST_LENGTH = 280  # 後方互換（=X_MAX_CHARS）
+
+# プラットフォーム別 文字数上限
+X_MAX_CHARS = 280
+X_SAFE_CHARS = 260
+THREADS_MAX_CHARS = 500
+THREADS_SAFE_CHARS = 480
+
+# build_thread_text の 親/reply 予算（プラットフォーム別）
+X_PARENT_BUDGET = 240
+X_REPLY_BUDGET = 260
+THREADS_PARENT_BUDGET = 480
+THREADS_REPLY_BUDGET = 480
 
 JST = timezone(timedelta(hours=9))
 
@@ -47,11 +61,17 @@ def clean_text(text: str) -> str:
     return text
 
 
-def safety_check(text: str) -> None:
+def safety_check(text: str, platform: str = "x") -> None:
+    """投稿前チェック。platform で上限を切替（X=280字 / Threads=500字）。
+    Xは日本語が重み2のため、重み付き長も280以下であることを要求する。
+    """
     if not text or not text.strip():
         raise ValueError("投稿本文が空です")
-    if len(text) > MAX_POST_LENGTH:
-        raise ValueError(f"投稿本文が長すぎます: {len(text)}文字")
+    max_chars, _ = platform_limits(platform)
+    if len(text) > max_chars:
+        raise ValueError(f"投稿本文が長すぎます（{platform}）: {len(text)}文字 > {max_chars}")
+    if platform == "x" and weighted_len(text) > X_MAX_CHARS:
+        raise ValueError(f"投稿本文が長すぎます（x重み付き）: {weighted_len(text)} > {X_MAX_CHARS}")
     for word in NG_WORDS:
         if word in text:
             raise ValueError(f"NGワードを検出しました: {word}")
@@ -104,3 +124,131 @@ def format_decision_log(
         f"image_path={image_path or '-'} | "
         f"tweet_id={tweet_id or '-'}"
     )
+
+
+# =========================================================
+# プラットフォーム別 文字数ユーティリティ
+# =========================================================
+
+def platform_limits(platform: str = "x") -> tuple[int, int]:
+    """(max_chars, safe_chars) を返す。"""
+    if (platform or "x").lower() == "threads":
+        return THREADS_MAX_CHARS, THREADS_SAFE_CHARS
+    return X_MAX_CHARS, X_SAFE_CHARS
+
+
+def get_post_platform() -> str:
+    """投稿先プラットフォーム。環境変数 POST_PLATFORM（"x" / "threads"）。既定は "x"。"""
+    p = (os.getenv("POST_PLATFORM", "x") or "x").strip().lower()
+    return p if p in ("x", "threads") else "x"
+
+
+def post_cost(text: str, platform: str = "x") -> int:
+    """投稿コスト。Xは重み付き（日本語=2）、Threadsは素の文字数で数える。"""
+    return weighted_len(text) if (platform or "x").lower() == "x" else len(text)
+
+
+def _split_sentences(text: str) -> list[str]:
+    """意味単位（文）に分割する。文末記号は保持し、改行は段落境界として扱う。"""
+    out: list[str] = []
+    for para in re.split(r"\n+", (text or "").strip()):
+        para = para.strip()
+        if not para:
+            continue
+        # 文末記号（。．.!！?？）で区切り、記号は文側に残す
+        for s in re.findall(r"[^。．\.!！?？]*[。．\.!！?？]|[^。．\.!！?？]+$", para):
+            s = s.strip()
+            if s:
+                out.append(s)
+    return out
+
+
+def _split_clauses(sentence: str) -> list[str]:
+    """1文が長すぎる場合の保険。読点・カンマ等の節境界で分割（記号は残す）。"""
+    parts = re.findall(r"[^、，,;；]*[、，,;；]|[^、，,;；]+$", sentence)
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def smart_trim(text: str, max_cost: int, platform: str = "x") -> str:
+    """max_cost 以内に収める。ただし「…」や文の途中切りは禁止。
+    文（必要なら節）の単位で、入る分だけを連結して返す。
+    """
+    text = (text or "").strip()
+    if post_cost(text, platform) <= max_cost:
+        return text
+    units = _split_sentences(text)
+    picked: list[str] = []
+    for u in units:
+        cand = (" ".join(picked + [u])).strip() if picked else u
+        if post_cost(cand, platform) <= max_cost:
+            picked.append(u)
+        else:
+            break
+    if picked:
+        return " ".join(picked).strip()
+    # 先頭の1文すら入らない → 節で詰める
+    picked = []
+    for c in _split_clauses(units[0] if units else text):
+        cand = (" ".join(picked + [c])).strip() if picked else c
+        if post_cost(cand, platform) <= max_cost:
+            picked.append(c)
+        else:
+            break
+    return " ".join(picked).strip()  # それでも空なら空文字（呼び出し側でスキップ）
+
+
+def build_thread_text(full_text: str, platform: str = "x") -> tuple[str, list[str]]:
+    """本文をスレッド用に分割する。「…」「文の途中切り」は使わず、意味単位で分ける。
+
+    platform="x":      親=240字以内 / reply=260字以内（コストは重み付き）
+    platform="threads": 親=480字以内 / reply=480字以内（最大500まで許容、素の文字数）
+
+    戻り値: (親投稿, [reply, ...])
+    """
+    platform = (platform or "x").lower()
+    if platform == "threads":
+        parent_budget, reply_budget = THREADS_PARENT_BUDGET, THREADS_REPLY_BUDGET
+    else:
+        parent_budget, reply_budget = X_PARENT_BUDGET, X_REPLY_BUDGET
+
+    sentences = _split_sentences(full_text)
+    if not sentences:
+        return (full_text or "").strip(), []
+
+    posts: list[str] = []
+    cur = ""
+    budget = parent_budget  # 最初は親の予算
+
+    def _flush():
+        nonlocal cur
+        if cur.strip():
+            posts.append(cur.strip())
+        cur = ""
+
+    for s in sentences:
+        # 1文が単独で予算超過 → 節分割し、それでも超えるなら smart_trim でその投稿だけ収める
+        if post_cost(s, platform) > budget:
+            _flush()
+            budget = reply_budget if posts else parent_budget
+            for c in _split_clauses(s):
+                cand = (cur + " " + c).strip() if cur else c
+                if post_cost(cand, platform) <= budget:
+                    cur = cand
+                else:
+                    _flush()
+                    budget = reply_budget
+                    cur = c if post_cost(c, platform) <= budget else smart_trim(c, budget, platform)
+            continue
+
+        cand = (cur + " " + s).strip() if cur else s
+        if post_cost(cand, platform) <= budget:
+            cur = cand
+        else:
+            _flush()
+            budget = reply_budget
+            cur = s
+
+    _flush()
+    if not posts:
+        return (full_text or "").strip(), []
+    return posts[0], posts[1:]
