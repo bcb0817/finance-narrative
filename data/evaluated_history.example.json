@@ -1,0 +1,10 @@
+[
+  {
+    "url": "https://example.com/evaluated-news",
+    "title": "Example evaluated headline",
+    "norm_title": "exampleevaluatedheadline",
+    "evaluated_at": "2000-01-01T00:00:00+00:00",
+    "should_post": false,
+    "skip_reason": "example"
+  }
+]

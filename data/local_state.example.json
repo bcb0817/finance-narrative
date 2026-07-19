@@ -1,0 +1,9 @@
+{
+  "news": {
+    "last_run_at": "2000-01-01T00:00:00+09:00",
+    "last_result": {
+      "returncode": 0,
+      "error": ""
+    }
+  }
+}

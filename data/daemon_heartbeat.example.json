@@ -1,0 +1,7 @@
+{
+  "pid": 0,
+  "status": "example",
+  "updated_at": "2000-01-01T00:00:00+09:00",
+  "next_bot": "news",
+  "next_run_at": "2000-01-01T00:30:00+09:00"
+}
