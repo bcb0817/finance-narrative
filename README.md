@@ -2,7 +2,6 @@
 
 米国株向けのX自動投稿Bot 4系統。**GitHub Actions からローカル運用に移行しました。**
 運用の中心は `local_finance_bot.py` です（**Windows / macOS / Linux 対応**）。GitHub Actions のスケジュールは無効化済みです
-（`.github/workflows/` は削除して構いません）。
 
 ## Bot構成
 
