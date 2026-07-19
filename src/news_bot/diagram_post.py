@@ -15,14 +15,20 @@ main.py からは generate_diagram_image() を呼ぶだけ。
 import json
 import random
 import logging
+import os
 
 from diagram_image import render_diagram, TYPE_TO_RENDERER
 
 logger = logging.getLogger(__name__)
 
-HANDLE = "@singa9999"          # 自分のアカウント（固定）
-IMAGE_PATH = "/tmp/diagram.png"
+HANDLE = os.getenv("DIAGRAM_HANDLE", "@finance_example")
+try:
+    from runtime import output_dir
+    IMAGE_PATH = str(output_dir("news") / "diagram.png")
+except ImportError:
+    IMAGE_PATH = "outputs/news/diagram.png"
 MAX_RETRIES = 2                # 構造不一致時の再生成回数（初回 + 2回 = 最大3回）
+DIAGRAM_VALUE_THRESHOLD = 8
 
 # image投稿で使う type プール（4レイアウトにバランスよく散らす）
 IMAGE_TYPE_POOL = [
@@ -39,6 +45,74 @@ IMAGE_TYPE_POOL = [
     "event_sequence",
     "policy_path",
 ]
+
+
+def assess_diagram_value(item, openai_client, model: str) -> dict:
+    """ニュースが画像図解に値するかを10段階で判定する。
+
+    APIエラーや不正な応答は、情報の薄い記事を図解しないため fail closed にする。
+    """
+    prompt = f"""あなたは金融SNSの編集者です。次のニュースを画像図解にする意味があるか判定してください。
+
+ニュース: {item.title}
+ソース: {item.source}
+
+図解価値を1〜10点で評価してください。8点以上にできるのは、次のいずれかの構造を
+見出しから事実に基づいて明確に作れる場合だけです。
+- 比較: 2つ以上の対象・シナリオに、各2点以上の比較材料がある
+- 因果: 原因→影響→市場の注目点を3段階以上で示せる
+- 時系列: 日時・順序が明確な出来事が3つ以上ある
+- 複数指標: 異なる意味を持つ具体的な数値・指標が2つ以上ある
+
+以下は必ず7点以下です。
+- 単一の出来事や発言を言い換えるだけ
+- 具体的な数値・比較対象・因果関係が不足している
+- 数値が1個以下、または情報不足を推測で補う必要がある
+- 箱、矢印、装飾を付けるだけで理解が深まらない
+
+JSONのみ返してください。
+{{
+  "score": 1,
+  "has_clear_structure": false,
+  "structure_type": "none|compare|causal|timeline|multi_metric",
+  "fact_count": 1,
+  "numeric_fact_count": 0,
+  "reason": "日本語で簡潔に"
+}}"""
+    try:
+        response = openai_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=1200,
+            reasoning_effort="minimal",
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+        score = max(1, min(10, int(data.get("score", 1))))
+        structure = str(data.get("structure_type", "none"))
+        clear = bool(data.get("has_clear_structure", False))
+        facts = max(0, int(data.get("fact_count", 0)))
+        numeric = max(0, int(data.get("numeric_fact_count", 0)))
+        allowed_structure = structure in {"compare", "causal", "timeline", "multi_metric"}
+        should_diagram = (
+            score >= DIAGRAM_VALUE_THRESHOLD
+            and clear
+            and allowed_structure
+            and facts >= 3
+            and not (structure == "multi_metric" and numeric < 2)
+        )
+        return {
+            **data, "score": score, "has_clear_structure": clear,
+            "structure_type": structure, "fact_count": facts,
+            "numeric_fact_count": numeric, "should_diagram": should_diagram,
+        }
+    except Exception as exc:
+        logger.warning("図解価値判定に失敗。通常文章へ切替: %s", exc)
+        return {
+            "score": 1, "has_clear_structure": False, "structure_type": "none",
+            "fact_count": 0, "numeric_fact_count": 0,
+            "reason": f"判定失敗: {exc}", "should_diagram": False,
+        }
 
 # 各 type で許す文字数の目安（描画崩れ防止）
 _LIMITS = {
@@ -259,6 +333,11 @@ def generate_diagram_image(item, openai_client, model: str):
 
     for attempt in range(1, MAX_RETRIES + 2):   # 初回 + MAX_RETRIES
         prompt = build_diagram_prompt(item, desired_type)
+        try:
+            from performance_learning import with_performance_learning
+        except ImportError:
+            from common.performance_learning import with_performance_learning
+        prompt = with_performance_learning(prompt)
         try:
             resp = openai_client.chat.completions.create(
                 model=model,

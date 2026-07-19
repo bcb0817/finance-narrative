@@ -31,11 +31,11 @@ logger = logging.getLogger(__name__)
 # =========================================================
 DEFAULT_AGENT = os.getenv(
     "RSS_USER_AGENT",
-    "Mozilla/5.0 (compatible; singa9999-finance-bot/1.0)",
+    "Mozilla/5.0 (compatible; example-finance-bot/1.0)",
 )
 SEC_USER_AGENT = os.getenv(
     "SEC_USER_AGENT",
-    "singa9999-finance-bot REPLACE_WITH_YOUR_EMAIL@example.com",  # ← 要差し替え
+    "example-finance-bot bot-contact@example.com",  # 公開用ダミー。運用時は要差し替え
 )
 
 
@@ -45,23 +45,21 @@ SEC_USER_AGENT = os.getenv(
 # =========================================================
 RSS_FEEDS: dict[str, dict] = {
     # --- 1. market_news ---
-    "Yahoo Finance":          {"url": "https://finance.yahoo.com/news/rssindex",                          "group": "market_news",     "priority": 5},
     "MarketWatch":            {"url": "https://feeds.marketwatch.com/marketwatch/topstories/",            "group": "market_news",     "priority": 5},
     "CNBC Markets":           {"url": "https://www.cnbc.com/id/15839069/device/rss/rss.html",             "group": "market_news",     "priority": 6},
     "CNBC Economy":           {"url": "https://www.cnbc.com/id/20910258/device/rss/rss.html",             "group": "market_news",     "priority": 6},
     "CNBC Earnings":          {"url": "https://www.cnbc.com/id/15839135/device/rss/rss.html",             "group": "market_news",     "priority": 6},
     "Investing.com":          {"url": "https://www.investing.com/rss/news.rss",                           "group": "market_news",     "priority": 4},
     "Seeking Alpha Currents": {"url": "https://seekingalpha.com/market_currents.xml",                     "group": "market_news",     "priority": 5},
-    "Benzinga":               {"url": "https://www.benzinga.com/feed",                                    "group": "market_news",     "priority": 4},
 
     # --- 2. official_macro（公式マクロ：高めの priority） ---
-    "Fed Press Releases":     {"url": "https://www.federalreserve.gov/feeds/press_all.xml",               "group": "official_macro",  "priority": 9},
+    "Fed Monetary Policy":    {"url": "https://www.federalreserve.gov/feeds/press_monetary.xml",          "group": "official_macro",  "priority": 10},
     "Fed Speeches":           {"url": "https://www.federalreserve.gov/feeds/speeches.xml",                "group": "official_macro",  "priority": 8},
-    "FRED Blog":              {"url": "https://fredblog.stlouisfed.org/feed/",                            "group": "official_macro",  "priority": 7},
     "BEA":                    {"url": "https://apps.bea.gov/rss/rss.xml",                                 "group": "official_macro",  "priority": 8},
-    "BLS":                    {"url": "https://www.bls.gov/feed/news_release.rss",                        "group": "official_macro",  "priority": 8},
+    "BLS Latest Indicators":  {"url": "https://www.bls.gov/feed/bls_latest.rss",                          "group": "official_macro",  "priority": 9},
     "EIA":                    {"url": "https://www.eia.gov/rss/todayinenergy.xml",                        "group": "official_macro",  "priority": 7},
-    "U.S. Treasury":          {"url": "https://home.treasury.gov/rss/press.xml",                          "group": "official_macro",  "priority": 8},
+    "SEC Press Releases":     {"url": "https://www.sec.gov/news/pressreleases.rss",                       "group": "official_macro",  "priority": 8},
+    "White House News":       {"url": "https://www.whitehouse.gov/news/feed/",                            "group": "official_macro",  "priority": 7},
 }
 
 # group 単位の加点（official_macro / company_filings を高めに）
@@ -329,6 +327,17 @@ def select_best_item(
 
 def fetch_news(posted_urls: set[str] | None = None) -> Optional[NewsItem]:
     """全フィードからニュースを取得して1件返す（data/posted_history.json のURLは除外）"""
+    candidates = fetch_news_candidates(posted_urls, limit=1)
+    return candidates[0] if candidates else None
+
+
+def fetch_news_candidates(
+    posted_urls: set[str] | None = None,
+    limit: int = 10,
+) -> list[NewsItem]:
+    """全フィードから取得し、スコア上位の候補を limit 件返す。
+    呼び出し側は先頭から順に評価し、評価済み(evaluated_history)なら次候補へ進める。
+    """
     if posted_urls is None:
         from posted_history import get_posted_urls
         posted_urls = get_posted_urls()
@@ -344,7 +353,20 @@ def fetch_news(posted_urls: set[str] | None = None) -> Optional[NewsItem]:
     unique_items = deduplicate(all_items)
     logger.info(f"重複除去後（URL+類似タイトル）: {len(unique_items)}件")
 
-    return select_best_item(unique_items, posted_urls=posted_urls)
+    available = [it for it in unique_items if it.url not in (posted_urls or set())]
+    excluded = len(unique_items) - len(available)
+    if excluded:
+        logger.info(f"投稿済み {excluded} 件を除外しました")
+
+    recent = [it for it in available if is_recent(it, hours=24)]
+    if not recent:
+        logger.warning("24時間以内の未投稿ニュースなし。全未投稿件から選択します")
+        recent = available
+
+    ranked = sorted(recent, key=score_item, reverse=True)[:limit]
+    for it in ranked[:3]:
+        logger.info(f"候補: [{it.source}] prio={it.priority} {it.title[:60]}")
+    return ranked
 
 
 def main() -> None:

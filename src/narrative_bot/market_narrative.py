@@ -299,6 +299,11 @@ def analyze_market(signals: dict | None = None) -> dict:
         signals = gather_signals()
 
     prompt = _build_prompt(signals)
+    try:
+        from performance_learning import with_performance_learning
+    except ImportError:
+        from common.performance_learning import with_performance_learning
+    prompt = with_performance_learning(prompt)
     client = get_openai_client()
     resp = client.chat.completions.create(
         model=OPENAI_GENERATE_MODEL,

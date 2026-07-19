@@ -209,6 +209,23 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# Local finance-bot operational data (publish only the *.example files)
+data/*.json
+data/*.jsonl
+data/*.lock
+!data/*.example.json
+!data/*.example.jsonl
+outputs/
+backups/
+*.bak-*
+knowledge/*
+!knowledge/README.md
+!knowledge/*/
+knowledge/*/*
+!knowledge/*/.gitkeep
+logs/*
+!logs/README.md
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

@@ -3,10 +3,10 @@ name: Market Narrative
 # cron は UTC 固定（GitHub Actions 仕様）。米国市場の夏時間(EDT)基準。
 # 冬時間(EST)期間は実際の市場時刻より1時間早く動く点に留意。
 on:
-  schedule:
-    - cron: '30 12 * * 1-5'   # UTC 12:30 = 米オープン1時間前（夏時間 8:30 ET）
-    - cron: '30 13 * * 1-5'   # UTC 13:30 = 米オープン直後（夏時間 9:30 ET）
-    - cron: '0 20 * * 1-5'    # UTC 20:00 = 米クローズ直後（夏時間 16:00 ET）
+  # schedule:  # ローカル運用へ移行済み（local_finance_bot.py daemon）
+    # - cron: '30 12 * * 1-5'   # UTC 12:30 = 米オープン1時間前（夏時間 8:30 ET）
+    # - cron: '30 13 * * 1-5'   # UTC 13:30 = 米オープン直後（夏時間 9:30 ET）
+    # - cron: '0 20 * * 1-5'    # UTC 20:00 = 米クローズ直後（夏時間 16:00 ET）
   workflow_dispatch:           # 手動実行は常に実投稿（postのみ）
 
 concurrency:

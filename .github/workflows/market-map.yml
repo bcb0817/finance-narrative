@@ -1,8 +1,8 @@
 name: market-map-post
 
 on:
-  schedule:
-    - cron: "35 13 * * 1-5"   # 平日 13:35 UTC ≒ 9:35 ET(夏時間)。冬時間は 14:35 UTC に要変更
+  # schedule:  # ローカル運用へ移行済み（local_finance_bot.py daemon）
+    # - cron: "35 13 * * 1-5"   # 平日 13:35 UTC ≒ 9:35 ET(夏時間)。冬時間は 14:35 UTC に要変更
   workflow_dispatch:            # 手動実行ボタン(検証用)
 
 jobs:

@@ -28,18 +28,14 @@ STANCE = {
     "中立": (139, 148, 158),
 }
 
-FONT_REG = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-FONT_BLK = "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc"
+from fonts import get_font  # 共通フォント解決（FONT_PATH対応・クロスプラットフォーム）
 
 W = 1080
 PAD = 48
 
 
 def _f(size, bold=False):
-    p = FONT_BLK if bold else FONT_REG
-    if not os.path.exists(p):
-        p = FONT_REG
-    return ImageFont.truetype(p, size)
+    return get_font(size, bold)
 
 
 def _wrap(d, text, font, max_w):

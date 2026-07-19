@@ -31,7 +31,11 @@ from weekly_renderer import render_weekly
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-OUT_PATH = "/tmp/weekly_events.png"
+try:
+    from runtime import output_dir
+    OUT_PATH = str(output_dir("weekly") / "weekly_events.png")
+except ImportError:
+    OUT_PATH = "outputs/weekly/weekly_events.png"
 CAPTION_TARGET = 260   # 目標上限
 CAPTION_HARD = 280     # X上限
 
@@ -181,6 +185,11 @@ def generate_weekly_event_caption(events: list[dict]) -> str:
 - 最後に「今週は〇〇が本番」「週後半に注目」のような引きのある一文で締める
 - ハッシュタグやURLは付けない。本文のみ返す
 """
+    try:
+        from performance_learning import with_performance_learning
+    except ImportError:
+        from common.performance_learning import with_performance_learning
+    prompt = with_performance_learning(prompt)
     client = get_openai_client()
     resp = client.chat.completions.create(
         model=OPENAI_GENERATE_MODEL,

@@ -41,6 +41,14 @@ def generate_market_map_post(out_path: str = "market_map.png") -> dict:
     df = fetch_market_data()
     df, total_change, sector_summary = calculate_market_cap_move(df)
 
+    # 投稿ゲート用の指標
+    total_mcap = float(df["market_cap"].sum()) or 1.0
+    total_pct = total_change / total_mcap * 100.0  # 指数近似の変化率(%)
+    # セクター偏り: |変化|合計に占める最大セクターの割合（0〜1）
+    abs_by_sector = sector_summary.abs()
+    skew = float(abs_by_sector.max() / abs_by_sector.sum()) if float(abs_by_sector.sum()) else 0.0
+    top_sector = str(abs_by_sector.idxmax()) if len(abs_by_sector) else ""
+
     headline = make_headline(total_change)
     caption = make_caption(df, total_change, sector_summary)
 
@@ -52,7 +60,9 @@ def generate_market_map_post(out_path: str = "market_map.png") -> dict:
         logger.warning("treemap 生成に失敗、画像なしで返却: %s", e)
         image_path = None
 
-    return {"headline": headline, "caption": caption, "image_path": image_path}
+    return {"headline": headline, "caption": caption, "image_path": image_path,
+            "total_change": total_change, "total_pct": total_pct,
+            "sector_skew": skew, "top_sector": top_sector}
 
 
 if __name__ == "__main__":

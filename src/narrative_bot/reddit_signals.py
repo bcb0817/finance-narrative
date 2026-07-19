@@ -31,7 +31,7 @@ _SKIP_TITLE = [
     "moves tomorrow", "what are your moves", "megathread", "ban bet",
 ]
 
-_USER_AGENT = "singa9999-market-narrative/1.0 (by /u/finance-bot)"
+_USER_AGENT = "example-market-narrative/1.0 (by /u/example_user)"
 
 
 def _fetch_subreddit(sub: str, period: str = "day", limit: int = 15) -> list[dict]:

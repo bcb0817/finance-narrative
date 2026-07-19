@@ -1,8 +1,8 @@
 name: Weekly Events
 
 on:
-  schedule:
-    - cron: '0 12 * * 0'   # UTC 日12:00 = JST 日21:00（実投稿）
+  # schedule:  # ローカル運用へ移行済み（local_finance_bot.py daemon）
+    # - cron: '0 12 * * 0'   # UTC 日12:00 = JST 日21:00（実投稿）
   workflow_dispatch:
     inputs:
       action:

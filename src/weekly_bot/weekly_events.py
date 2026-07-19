@@ -78,7 +78,7 @@ def _http_get_json(path: str, params: dict):
     q = dict(params)
     q["token"] = token
     url = f"{FINNHUB_BASE}{path}?{urllib.parse.urlencode(q)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "singa9999-weekly-bot"})
+    req = urllib.request.Request(url, headers={"User-Agent": "example-weekly-bot"})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read())

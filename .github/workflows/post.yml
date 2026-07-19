@@ -4,55 +4,55 @@ name: X Finance Auto Post Bot
 # AI審査（assess_market_impact）で市場影響が小さいものは投稿せずスキップする。
 
 on:
-  schedule:
-    - cron: '0 0 * * *'  # JST 09:00
-    - cron: '30 0 * * *'  # JST 09:30
-    - cron: '0 1 * * *'  # JST 10:00
-    - cron: '30 1 * * *'  # JST 10:30
-    - cron: '0 2 * * *'  # JST 11:00
-    - cron: '30 2 * * *'  # JST 11:30
-    - cron: '0 3 * * *'  # JST 12:00
-    - cron: '30 3 * * *'  # JST 12:30
-    - cron: '0 4 * * *'  # JST 13:00
-    - cron: '30 4 * * *'  # JST 13:30
-    - cron: '0 5 * * *'  # JST 14:00
-    - cron: '30 5 * * *'  # JST 14:30
-    - cron: '0 6 * * *'  # JST 15:00
-    - cron: '30 6 * * *'  # JST 15:30
-    - cron: '0 7 * * *'  # JST 16:00
-    - cron: '30 7 * * *'  # JST 16:30
-    - cron: '0 8 * * *'  # JST 17:00
-    - cron: '30 8 * * *'  # JST 17:30
-    - cron: '0 9 * * *'  # JST 18:00
-    - cron: '30 9 * * *'  # JST 18:30
-    - cron: '0 10 * * *'  # JST 19:00
-    - cron: '30 10 * * *'  # JST 19:30
-    - cron: '0 11 * * *'  # JST 20:00
-    - cron: '30 11 * * *'  # JST 20:30
-    - cron: '0 12 * * *'  # JST 21:00
-    - cron: '30 12 * * *'  # JST 21:30
-    - cron: '0 13 * * *'  # JST 22:00
-    - cron: '30 13 * * *'  # JST 22:30
-    - cron: '0 14 * * *'  # JST 23:00
-    - cron: '30 14 * * *'  # JST 23:30
-    - cron: '0 15 * * *'  # JST 00:00
-    - cron: '30 15 * * *'  # JST 00:30
-    - cron: '0 16 * * *'  # JST 01:00
-    - cron: '30 16 * * *'  # JST 01:30
-    - cron: '0 17 * * *'  # JST 02:00
-    - cron: '30 17 * * *'  # JST 02:30
-    - cron: '0 18 * * *'  # JST 03:00
-    - cron: '30 18 * * *'  # JST 03:30
-    - cron: '0 19 * * *'  # JST 04:00
-    - cron: '30 19 * * *'  # JST 04:30
-    - cron: '0 20 * * *'  # JST 05:00
-    - cron: '30 20 * * *'  # JST 05:30
-    - cron: '0 21 * * *'  # JST 06:00
-    - cron: '30 21 * * *'  # JST 06:30
-    - cron: '0 22 * * *'  # JST 07:00
-    - cron: '30 22 * * *'  # JST 07:30
-    - cron: '0 23 * * *'  # JST 08:00
-    - cron: '30 23 * * *'  # JST 08:30
+  # schedule:  # ローカル運用へ移行済み（local_finance_bot.py daemon）
+    # - cron: '0 0 * * *'  # JST 09:00
+    # - cron: '30 0 * * *'  # JST 09:30
+    # - cron: '0 1 * * *'  # JST 10:00
+    # - cron: '30 1 * * *'  # JST 10:30
+    # - cron: '0 2 * * *'  # JST 11:00
+    # - cron: '30 2 * * *'  # JST 11:30
+    # - cron: '0 3 * * *'  # JST 12:00
+    # - cron: '30 3 * * *'  # JST 12:30
+    # - cron: '0 4 * * *'  # JST 13:00
+    # - cron: '30 4 * * *'  # JST 13:30
+    # - cron: '0 5 * * *'  # JST 14:00
+    # - cron: '30 5 * * *'  # JST 14:30
+    # - cron: '0 6 * * *'  # JST 15:00
+    # - cron: '30 6 * * *'  # JST 15:30
+    # - cron: '0 7 * * *'  # JST 16:00
+    # - cron: '30 7 * * *'  # JST 16:30
+    # - cron: '0 8 * * *'  # JST 17:00
+    # - cron: '30 8 * * *'  # JST 17:30
+    # - cron: '0 9 * * *'  # JST 18:00
+    # - cron: '30 9 * * *'  # JST 18:30
+    # - cron: '0 10 * * *'  # JST 19:00
+    # - cron: '30 10 * * *'  # JST 19:30
+    # - cron: '0 11 * * *'  # JST 20:00
+    # - cron: '30 11 * * *'  # JST 20:30
+    # - cron: '0 12 * * *'  # JST 21:00
+    # - cron: '30 12 * * *'  # JST 21:30
+    # - cron: '0 13 * * *'  # JST 22:00
+    # - cron: '30 13 * * *'  # JST 22:30
+    # - cron: '0 14 * * *'  # JST 23:00
+    # - cron: '30 14 * * *'  # JST 23:30
+    # - cron: '0 15 * * *'  # JST 00:00
+    # - cron: '30 15 * * *'  # JST 00:30
+    # - cron: '0 16 * * *'  # JST 01:00
+    # - cron: '30 16 * * *'  # JST 01:30
+    # - cron: '0 17 * * *'  # JST 02:00
+    # - cron: '30 17 * * *'  # JST 02:30
+    # - cron: '0 18 * * *'  # JST 03:00
+    # - cron: '30 18 * * *'  # JST 03:30
+    # - cron: '0 19 * * *'  # JST 04:00
+    # - cron: '30 19 * * *'  # JST 04:30
+    # - cron: '0 20 * * *'  # JST 05:00
+    # - cron: '30 20 * * *'  # JST 05:30
+    # - cron: '0 21 * * *'  # JST 06:00
+    # - cron: '30 21 * * *'  # JST 06:30
+    # - cron: '0 22 * * *'  # JST 07:00
+    # - cron: '30 22 * * *'  # JST 07:30
+    # - cron: '0 23 * * *'  # JST 08:00
+    # - cron: '30 23 * * *'  # JST 08:30
   workflow_dispatch:
     inputs:
       mode:

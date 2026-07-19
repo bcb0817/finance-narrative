@@ -1,0 +1,12 @@
+# systemd ユニット例: /etc/systemd/system/finance-bot.service
+[Unit]
+Description=finance bot daemon
+After=network-online.target
+[Service]
+WorkingDirectory=/path/to/finance-narrative
+Environment=POST_ENABLED=true
+ExecStart=/path/to/finance-narrative/.venv/bin/python local_finance_bot.py daemon
+Restart=on-failure
+RestartSec=15
+[Install]
+WantedBy=default.target

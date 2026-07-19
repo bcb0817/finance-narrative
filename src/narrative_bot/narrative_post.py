@@ -39,7 +39,11 @@ from safety import format_decision_log
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-OUT_PATH = "/tmp/narrative.png"
+try:
+    from runtime import output_dir
+    OUT_PATH = str(output_dir("narrative") / "narrative.png")
+except ImportError:
+    OUT_PATH = "outputs/narrative/narrative.png"
 
 
 def _log_top(top: dict) -> None:
@@ -53,36 +57,16 @@ def _log_top(top: dict) -> None:
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-# 米国市場（NYSE/NASDAQ）の全休場日。出所: NYSE/ICE 公式カレンダー。
-# 半日立会い（早期クローズ）は通常営業扱いとし、ここには含めない。
-# ※ AIの推測ではなく公式日程の転記。年に1回、翌年分を更新すること。
-US_MARKET_HOLIDAYS = {
-    # 2026年（10日）
-    "2026-01-01",  # 元日
-    "2026-01-19",  # キング牧師記念日
-    "2026-02-16",  # ワシントン誕生日（大統領の日）
-    "2026-04-03",  # グッドフライデー
-    "2026-05-25",  # メモリアルデー
-    "2026-06-19",  # ジューンティーンス
-    "2026-07-03",  # 独立記念日の振替（7/4が土曜のため）
-    "2026-09-07",  # レイバーデー
-    "2026-11-26",  # サンクスギビング
-    "2026-12-25",  # クリスマス
-}
+# 休場日判定は common/calendar_utils.py に共通化（narrative / market-map / scheduler で共用）
+from calendar_utils import us_market_holiday_reason
 
 
 def _is_us_market_holiday() -> tuple[bool, str]:
-    """米国東部時間(ET)の「今日」が市場の祝日休場日か判定。
-    （週末はcronが平日のみ=1-5のため対象外。手動テストは週末でも可能にする）"""
-    try:
-        et_today = datetime.now(ZoneInfo("America/New_York")).date()
-    except Exception:
-        # zoneinfoが無い環境向けフォールバック（夏時間 -4h 固定で近似）
-        et_today = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
-    iso = et_today.isoformat()
-    if iso in US_MARKET_HOLIDAYS:
-        return True, f"米国市場の休場日（ET {iso}）"
-    return False, ""
+    import os
+    if os.environ.get("FORCE_POST", "").strip().lower() in ("true", "1", "yes"):
+        return False, ""  # forceはスケジュール条件（休場日）のみ無視。安全審査は維持。
+    reason = us_market_holiday_reason()
+    return (bool(reason), reason)
 
 
 def run_narrative(post: bool = False, out_path: str = OUT_PATH):
@@ -145,13 +129,14 @@ def run_narrative(post: bool = False, out_path: str = OUT_PATH):
 
     # ===== X投稿（top_narrative だけをレビュー対象にする）=====
     from post import review_tweet_with_openai, post_tweet_with_image, NG_WORDS
+    from x_client import post_tweet_thread_with_image
+    from safety import build_x_thread_text, safety_check, weighted_len
 
     caption = build_caption(top)
     if not caption:
         logger.warning("X投稿案が空のため投稿中止")
         return None
-    if len(caption) > X_POST_MAX:
-        caption = caption[:X_POST_MAX - 1].rstrip() + "…"
+    # 「…」や途中切りはしない。長い場合はスレッド分割で全文を届ける。
 
     for w in NG_WORDS:
         if w in caption:
@@ -175,7 +160,42 @@ def run_narrative(post: bool = False, out_path: str = OUT_PATH):
             final_caption=caption, image_path=image_path))
         return None
 
-    tweet_id = post_tweet_with_image(caption, image_path)
+    # ===== 投稿（240字以内は単発、超えたらスレッド）=====
+    use_thread = weighted_len(caption) > 240 or caption.endswith("…")
+    parent_text, reply_texts = (caption, [])
+    if use_thread:
+        parent_text, reply_texts = build_x_thread_text(caption)
+
+    # 親投稿の safety_check（NGなら投稿しない）
+    try:
+        safety_check(parent_text)
+        safety_result = "ok"
+    except ValueError as e:
+        logger.error(f"safety_check NG のため投稿中止: {e}")
+        logger.info(format_decision_log(
+            selected_post_type="market_narrative", post_value=post_value,
+            skip_reason=f"safety_check:{e}",
+            source_titles=top.get("source_titles", []),
+            final_caption=caption, image_path=image_path))
+        return None
+
+    each_post_length = [len(parent_text)] + [len(r) for r in reply_texts]
+    if use_thread:
+        tweet_ids = post_tweet_thread_with_image(parent_text, image_path, reply_texts)
+        parent_tweet_id = tweet_ids[0] if tweet_ids else ""
+        reply_tweet_ids = tweet_ids[1:] if len(tweet_ids) > 1 else []
+        tweet_id = parent_tweet_id
+    else:
+        tweet_id = post_tweet_with_image(parent_text, image_path)
+        parent_tweet_id, reply_tweet_ids = tweet_id, []
+
+    logger.info(
+        "[NARR-POST] use_thread=%s | parent_tweet_id=%s | reply_tweet_ids=%s | "
+        "final_caption_length=%s | each_post_length=%s | safety_check_result=%s",
+        str(use_thread).lower(), parent_tweet_id or "-",
+        ",".join(reply_tweet_ids) or "-",
+        len(caption), each_post_length, safety_result,
+    )
     logger.info(f"市場ナラティブ投稿成功: {tweet_id}")
     logger.info(format_decision_log(
         selected_post_type="market_narrative", post_value=post_value,

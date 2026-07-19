@@ -43,8 +43,7 @@ COUNTRY_COLORS = {
     "CN": (248, 113, 113), "UK": (96, 165, 250), "TW": (52, 211, 153),
 }
 
-FONT_REG = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-FONT_BLK = "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc"
+from fonts import get_font
 
 W        = 1080
 PAD      = 48
@@ -59,10 +58,7 @@ BODY_W      = W - PAD - COL_BODY
 
 
 def _f(size, bold=False):
-    path = FONT_BLK if bold else FONT_REG
-    if not os.path.exists(path):
-        path = FONT_REG
-    return ImageFont.truetype(path, size)
+    return get_font(size, bold)
 
 
 def _wrap(d, text, font, max_w):

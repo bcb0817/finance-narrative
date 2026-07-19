@@ -113,6 +113,15 @@ def format_decision_log(
     else:
         srcs = str(source_titles)[:300]
     cap = (final_caption or "").replace("\n", " / ")
+    try:
+        from runtime import log_decision
+        log_decision({
+            "selected_post_type": selected_post_type, "post_value": post_value,
+            "skip_reason": skip_reason, "source_titles": srcs, "ticker": ticker,
+            "final_caption": cap, "image_path": image_path, "tweet_id": tweet_id,
+        })
+    except Exception:
+        pass
     return (
         "[DECISION] "
         f"selected_post_type={selected_post_type or '-'} | "
@@ -138,9 +147,8 @@ def platform_limits(platform: str = "x") -> tuple[int, int]:
 
 
 def get_post_platform() -> str:
-    """投稿先プラットフォーム。環境変数 POST_PLATFORM（"x" / "threads"）。既定は "x"。"""
-    p = (os.getenv("POST_PLATFORM", "x") or "x").strip().lower()
-    return p if p in ("x", "threads") else "x"
+    """X専用運用。Threads対応は無効化済み（POST_PLATFORM は無視して常に "x"）。"""
+    return "x"
 
 
 def post_cost(text: str, platform: str = "x") -> int:
@@ -252,3 +260,29 @@ def build_thread_text(full_text: str, platform: str = "x") -> tuple[str, list[st
     if not posts:
         return (full_text or "").strip(), []
     return posts[0], posts[1:]
+
+
+def build_x_thread_text(full_text: str) -> tuple[str, list[str]]:
+    """X専用のスレッド分割。親<=240 / reply<=260（X重み付き、CJK=2）。
+    reply先頭に "1/n " 形式の番号を付ける。文の途中では切らず「…」も使わない。
+    セクション順（結論→何が起きた→なぜ重要→市場への影響→見るべき点）は
+    入力テキストの順序をそのまま保持することで守られる。
+    """
+    # まず番号prefixぶんの余白(重み6程度)を確保して分割
+    parent, replies = build_thread_text(full_text, "x")
+    if not replies:
+        return parent, []
+
+    n = len(replies)
+    numbered: list[str] = []
+    for i, r in enumerate(replies, 1):
+        prefix = f"{i}/{n} "
+        body = r
+        # prefix込みで reply予算(260)を超えるなら意味単位で詰める
+        budget = X_REPLY_BUDGET - weighted_len(prefix)
+        if post_cost(body, "x") > budget:
+            body = smart_trim(body, budget, "x")
+        if not body:
+            continue
+        numbered.append(prefix + body)
+    return parent, numbered

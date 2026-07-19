@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 import logging
 from datetime import datetime
 from typing import Optional
@@ -32,7 +33,7 @@ from x_client import (
 # --- news_bot 内のモジュール ---
 from news import fetch_news, NewsItem
 from posted_history import add_posted_entry, get_posted_urls
-from diagram_post import generate_diagram_image
+from diagram_post import assess_diagram_value, generate_diagram_image
 
 
 logging.basicConfig(
@@ -95,6 +96,9 @@ def build_finance_prompt(
 - {length_rule}
 - 日本の個人投資家・金融クラスタ向け
 - 専門的だが、読みやすく簡潔に
+- 構成は「結論→理由→注目点」の順にする
+- 内容に合う絵文字を0〜3個だけ使ってよい（飾りだけの絵文字は禁止）
+- 長い箇条書き、無意味な矢印、図解風の装飾は禁止
 - 株式市場、金利、為替、マクロ経済への影響を中立的に説明
 - 数字・データがニュースタイトルに含まれる場合のみ使う
 {PROMPT_SAFETY_RULES}
@@ -103,9 +107,8 @@ def build_finance_prompt(
 - 投稿本文のみ返答する
 
 おすすめの型：
-【市場メモ】
-本文
-
+結論：〇〇
+理由：〇〇
 注目点：〇〇
 """
 
@@ -224,10 +227,10 @@ def build_contextual_finance_prompt(
 次の確認：〇〇"""
     elif with_link:
         length_rule = "100文字から170文字以内（URLは別行で付けるため短めに）"
-        format_block = "本文のあと、改行して「注目点：」と「次の確認：」を簡潔に。"
+        format_block = "「結論→理由→注目点」の順にし、最後に「次の確認：」を簡潔に。"
     else:
         length_rule = "120文字から240文字以内"
-        format_block = "本文のあと、改行して「注目点：」と「次の確認：」を簡潔に。"
+        format_block = "「結論→理由→注目点」の順にし、最後に「次の確認：」を簡潔に。"
 
     return f"""以下の金融ニュースを元に、Xに投稿する日本語の「背景解説つき」ポストを1つ作成してください。
 表面的な要約だけでは、前提知識のない読者に重要性が伝わりません。背景と意味を補ってください。
@@ -249,6 +252,8 @@ def build_contextual_finance_prompt(
 - {length_rule}
 - 日本の個人投資家・金融クラスタ向けに、中立的かつ簡潔に
 - {format_block}
+- 内容に合う絵文字を0〜3個だけ使ってよい（飾りだけの絵文字は禁止）
+- 長い箇条書き、無意味な矢印、図解風の装飾は禁止
 - ニュース本文・取得データにないことは断定しない。不確実なことは
   「可能性がある」「警戒されやすい」「注目されやすい」「確認したい」
   「市場が意識しやすい」「文脈で見られやすい」等の表現にする
@@ -313,22 +318,52 @@ def _news_log(
     *, selected_news_title="", source="-", selected_post_type="news_summary",
     post_value="-", us_equity_relevance="-", social_buzz_score="-",
     narrative_value="-", theme_relevance="-", market_scope="-",
-    threshold=NEWS_BOT_POST_VALUE_THRESHOLD, should_post="-",
+    threshold=None, should_post="-",
     skip_reason="-", safety_check_result="-", shortened=False, tweet_id="-",
+    dry_run=None, actual_post_attempted=False,
+    evaluated_history_hit=False, duplicate_title_hit=False,
 ) -> None:
     """通常Botの判断ログ（要件の全フィールドを毎run出す）。"""
+    if threshold is None:
+        threshold = NEWS_BOT_POST_VALUE_THRESHOLD
+    if dry_run is None:
+        dry_run = not _post_enabled_now()
     logger.info(
         "[NEWS] selected_news_title=%r | source=%s | selected_post_type=%s | "
         "post_value=%s | us_equity_relevance=%s | social_buzz_score=%s | "
         "narrative_value=%s | theme_relevance=%s | market_scope=%s | threshold=%s | "
-        "should_post=%s | skip_reason=%s | safety_check_result=%s | shortened=%s | tweet_id=%s",
+        "post_enabled=%s | dry_run=%s | should_post=%s | actual_post_attempted=%s | "
+        "skip_reason=%s | evaluated_history_hit=%s | duplicate_title_hit=%s | "
+        "safety_check_result=%s | shortened=%s | tweet_id=%s",
         selected_news_title, source, selected_post_type,
         post_value, us_equity_relevance, social_buzz_score,
         narrative_value, theme_relevance, market_scope, threshold,
+        str(_post_enabled_now()).lower(), str(bool(dry_run)).lower(),
         str(should_post).lower() if isinstance(should_post, bool) else should_post,
-        skip_reason or "-", safety_check_result or "-",
+        str(bool(actual_post_attempted)).lower(),
+        skip_reason or "-", str(bool(evaluated_history_hit)).lower(),
+        str(bool(duplicate_title_hit)).lower(),
+        safety_check_result or "-",
         str(bool(shortened)).lower(), tweet_id or "-",
     )
+    try:
+        from runtime import log_decision
+        log_decision({
+            "bot": "news", "selected_news_title": selected_news_title, "source": source,
+            "selected_post_type": selected_post_type, "post_value": post_value,
+            "us_equity_relevance": us_equity_relevance, "social_buzz_score": social_buzz_score,
+            "narrative_value": narrative_value, "theme_relevance": theme_relevance,
+            "market_scope": market_scope, "threshold": threshold,
+            "should_post": should_post, "skip_reason": skip_reason,
+            "safety_check_result": safety_check_result, "shortened": bool(shortened),
+            "tweet_id": tweet_id, "post_enabled": _post_enabled_now(),
+            "dry_run": bool(dry_run) if dry_run is not None else (not _post_enabled_now()),
+            "actual_post_attempted": bool(actual_post_attempted),
+            "evaluated_history_hit": bool(evaluated_history_hit),
+            "duplicate_title_hit": bool(duplicate_title_hit),
+        })
+    except Exception:
+        pass
 
 
 def ensure_postable(text: str, *, max_chars: int = 240) -> tuple[bool, str, str, bool]:
@@ -398,10 +433,28 @@ def handle_image_post(item: NewsItem, impact: dict | None = None) -> None:
              safety_check_result=safety_result, shortened=shortened)
         return
 
-    tweet_id = post_tweet_with_image(caption, image_path)
-    add_posted_entry(item, tweet_id=tweet_id, mode="image")
-    _log(skip_reason="-", safety_check_result=safety_result,
-         shortened=shortened, tweet_id=tweet_id)
+    # #7 240字超（X重み付き）はスレッド投稿。News Botは短文優先だが、超えた場合の保険。
+    from safety import build_x_thread_text, weighted_len as _wl
+    use_thread = _wl(caption) > 240
+    if use_thread:
+        from x_client import post_tweet_thread_with_image
+        parent_text, reply_texts = build_x_thread_text(caption)
+        tweet_ids = post_tweet_thread_with_image(parent_text, image_path, reply_texts)
+        tweet_id = tweet_ids[0] if tweet_ids else ""
+        logger.info(
+            "[NEWS-THREAD] use_thread=true | parent_tweet_id=%s | reply_tweet_ids=%s | "
+            "final_caption_length=%s | each_post_length=%s",
+            tweet_id or "-", ",".join(tweet_ids[1:]) or "-",
+            len(caption), [len(parent_text)] + [len(r) for r in reply_texts],
+        )
+    else:
+        tweet_id = post_tweet_with_image(caption, image_path)
+        logger.info("[NEWS-THREAD] use_thread=false | parent_tweet_id=%s | "
+                    "final_caption_length=%s", tweet_id or "-", len(caption))
+    add_posted_entry(item, tweet_id=tweet_id, mode="image", impact=impact, text=caption)
+    _log(skip_reason=("-" if tweet_id else "dry_run_not_posted"),
+         safety_check_result=safety_result, shortened=shortened, tweet_id=tweet_id,
+         dry_run=DRY_RUN, actual_post_attempted=_post_enabled_now())
 
 
 # 通常ニュースBotは「高投稿価値だけ」方針。post_value>=7 かつ 米国株関連度>=8 のみ投稿。
@@ -409,11 +462,57 @@ IMPACT_SKIP_LEVEL = "low"  # 後方互換（未使用化）
 
 # should_post を許可する market_scope（直接インパクト経路）
 NEWS_BOT_ALLOWED_SCOPES = {"market_wide", "sector", "major_company"}
-# us_equity_relevance の投稿許可しきい値（直接インパクト経路）
-NEWS_BOT_RELEVANCE_THRESHOLD = 8
+
+
+def _env_int(name: str, default: int) -> int:
+    """.env から整数しきい値を読む（未設定・不正時は default）。"""
+    v = os.environ.get(name, "").strip()
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+# しきい値は .env で調整可能（通過率チューニング用）。既定は通過率30%前後を狙った緩め設定。
+NEWS_BOT_RELEVANCE_THRESHOLD = _env_int("NEWS_RELEVANCE_THRESHOLD", 7)
 # 話題性・ナラティブ経路のしきい値
-NEWS_BOT_BUZZ_THRESHOLD = 8
-NEWS_BOT_NARRATIVE_THRESHOLD = 8
+def _post_enabled_now() -> bool:
+    return os.environ.get("POST_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+
+
+# 起動時に main() で更新（dry_run = not POST_ENABLED）
+DRY_RUN = not _post_enabled_now()
+
+# #6 汎用まとめ/ランキング記事の判定（1日1回まで）
+_ROUNDUP_PAT = re.compile(
+    r"(best|top\s*\d+|ranking|round\s*-?up|roundup|rates today|まとめ|ランキング|"
+    r"best rates|today['’]s best|what to watch|things to know)",
+    re.IGNORECASE,
+)
+
+
+def _is_roundup_title(title: str) -> bool:
+    return bool(_ROUNDUP_PAT.search(title or ""))
+
+
+def _roundup_posted_today() -> bool:
+    """本日(JST)、まとめ/ランキング記事を既に投稿済みか。posted_history を見る。"""
+    try:
+        from posted_history import load_history
+        today = datetime.now(JST).date().isoformat()
+        for e in load_history():
+            if str(e.get("posted_at", "")).startswith(today) and _is_roundup_title(e.get("title", "")):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+NEWS_BOT_BUZZ_THRESHOLD = _env_int("NEWS_BUZZ_THRESHOLD", 7)
+NEWS_BOT_NARRATIVE_THRESHOLD = _env_int("NEWS_NARRATIVE_THRESHOLD", 7)
+NEWS_BOT_THEME_THRESHOLD = _env_int("NEWS_THEME_THRESHOLD", 6)
+# safety.py の既定(7)を .env で上書き（既定6=緩め）
+NEWS_BOT_POST_VALUE_THRESHOLD = _env_int("NEWS_POST_VALUE_THRESHOLD", 6)
 
 
 def assess_market_impact(item: NewsItem) -> dict:
@@ -508,27 +607,20 @@ EIAで投稿可は「原油/ガソリン/天然ガス在庫・WTI/Brent需給・
         theme = _i("theme_relevance")
         scope = str(data.get("market_scope", "none"))
 
-        # (A) 直接インパクト経路 / (B) 話題性・ナラティブ経路
-        direct_ok = (
-            pv >= NEWS_BOT_POST_VALUE_THRESHOLD
-            and rel >= NEWS_BOT_RELEVANCE_THRESHOLD
-            and scope in NEWS_BOT_ALLOWED_SCOPES
-        )
-        buzz_ok = (
-            pv >= NEWS_BOT_POST_VALUE_THRESHOLD
-            and buzz >= NEWS_BOT_BUZZ_THRESHOLD
-            and narr >= NEWS_BOT_NARRATIVE_THRESHOLD
-        )
-        should = direct_ok or buzz_ok
+        # #6 通常Botの投稿条件:
+        # post_value>=7 かつ (直接関連度>=8 or 話題性+テーマ or ナラティブ+テーマ)
+        direct_ok = rel >= NEWS_BOT_RELEVANCE_THRESHOLD
+        buzz_ok = (buzz >= NEWS_BOT_BUZZ_THRESHOLD and theme >= NEWS_BOT_THEME_THRESHOLD)
+        narr_ok = (narr >= NEWS_BOT_NARRATIVE_THRESHOLD and theme >= NEWS_BOT_THEME_THRESHOLD)
+        should = (pv >= NEWS_BOT_POST_VALUE_THRESHOLD) and (direct_ok or buzz_ok or narr_ok)
 
         if should:
             skip_reason = ""
         elif pv < NEWS_BOT_POST_VALUE_THRESHOLD:
             skip_reason = f"post_value<{NEWS_BOT_POST_VALUE_THRESHOLD}"
         else:
-            # post_value は足りているが、直接経路も話題性経路も満たさない
             skip_reason = (
-                f"direct(rel{rel}/scope:{scope})・buzz(buzz{buzz}/narr{narr}) ともに基準未満"
+                f"gate未通過(rel{rel}/buzz{buzz}/narr{narr}/theme{theme})"
             )
 
         data.update({
@@ -536,7 +628,7 @@ EIAで投稿可は「原油/ガソリン/天然ガス在庫・WTI/Brent需給・
             "social_buzz_score": buzz, "narrative_value": narr,
             "theme_relevance": theme, "market_scope": scope,
             "should_post": should, "skip_reason": skip_reason,
-            "pass_path": "direct" if direct_ok else ("buzz" if buzz_ok else "-"),
+            "pass_path": ("direct" if direct_ok else ("buzz" if buzz_ok else ("narrative" if narr_ok else "-"))),
         })
         return data
     except Exception as e:
@@ -549,6 +641,12 @@ EIAで投稿可は「原油/ガソリン/天然ガス在庫・WTI/Brent需給・
 
 def main(mode: str = "image") -> None:
     logger.info(f"mode: {mode}")
+    global DRY_RUN
+    DRY_RUN = not _post_enabled_now()
+    logger.info(
+        f"POST_ENABLED={str(_post_enabled_now()).lower()} / dry_run={str(DRY_RUN).lower()}"
+        + ("（dry-run: 投稿判定は行うが実投稿はしません）" if DRY_RUN else "")
+    )
     # 通常ニュース要約は格下げ。リンクは付けず（ソース名のみ）、高価値だけ投稿。
     if mode == "link":
         logger.info("linkモードは廃止（ソース名のみ・URLなし方針）。no-linkに切替。")
@@ -557,35 +655,144 @@ def main(mode: str = "image") -> None:
     posted_urls = get_posted_urls()
     logger.info(f"投稿済みURL数: {len(posted_urls)}")
 
-    item: Optional[NewsItem] = fetch_news(posted_urls=posted_urls)
-    if not item:
+    # 候補を順番に評価し、最初に基準を通ったニュースを投稿対象にする。
+    # 評価済み・低価値の候補で、その回全体を終了しない。
+    from news import fetch_news_candidates
+    from posted_history import recently_evaluated, record_evaluated
+
+    try:
+        max_candidates = max(1, min(15, int(os.getenv("NEWS_MAX_CANDIDATES", "5"))))
+    except ValueError:
+        max_candidates = 5
+
+    candidates = fetch_news_candidates(posted_urls=posted_urls, limit=max_candidates)
+    if not candidates:
         logger.error("ニュース取得失敗")
         _news_log(selected_post_type=mode, skip_reason="no_news", should_post=False)
+        return
+
+    item = None
+    impact = None
+    pv = rel = buzz = narr = theme = 0
+    scope = "-"
+    checked_count = 0
+
+    for rank, cand in enumerate(candidates, start=1):
+        checked_count += 1
+        logger.info(
+            f"候補評価 {rank}/{len(candidates)}: "
+            f"[{cand.source}] {cand.title[:100]}"
+        )
+
+        ev_url_hit, ev_title_hit = recently_evaluated(cand.url, cand.title)
+        if ev_url_hit or ev_title_hit:
+            reason = "evaluated_recently_url" if ev_url_hit else "evaluated_recently_title"
+            logger.info(f"評価済みのため次候補へ: {reason} :: {cand.title[:50]}")
+            _news_log(
+                selected_news_title=cand.title, source=cand.source,
+                selected_post_type=mode, should_post=False, skip_reason=reason,
+                evaluated_history_hit=True, duplicate_title_hit=ev_title_hit,
+                dry_run=DRY_RUN, actual_post_attempted=False,
+            )
+            continue
+
+        cand_impact = assess_market_impact(cand)
+        cand_pv = cand_impact.get("post_value", 0)
+        cand_rel = cand_impact.get("us_equity_relevance", 0)
+        cand_buzz = cand_impact.get("social_buzz_score", 0)
+        cand_narr = cand_impact.get("narrative_value", 0)
+        cand_theme = cand_impact.get("theme_relevance", 0)
+        cand_scope = cand_impact.get("market_scope", "-")
+        cand_should = cand_impact.get("should_post", False)
+
+        if not cand_should:
+            skip_reason = cand_impact.get("skip_reason") or "low_value"
+            record_evaluated(
+                cand.url, cand.title,
+                skip_reason=skip_reason, should_post=False,
+            )
+            _news_log(
+                selected_news_title=cand.title, source=cand.source,
+                selected_post_type=mode, post_value=cand_pv,
+                us_equity_relevance=cand_rel, social_buzz_score=cand_buzz,
+                narrative_value=cand_narr, theme_relevance=cand_theme,
+                market_scope=cand_scope, should_post=False,
+                skip_reason=skip_reason, dry_run=DRY_RUN,
+                actual_post_attempted=False, evaluated_history_hit=False,
+                duplicate_title_hit=False,
+            )
+            logger.info(
+                f"候補{rank}は基準未満。次候補へ: "
+                f"{cand_impact.get('reason', '')}"
+            )
+            continue
+
+        record_evaluated(cand.url, cand.title, skip_reason="", should_post=True)
+        item = cand
+        impact = cand_impact
+        pv = cand_pv
+        rel = cand_rel
+        buzz = cand_buzz
+        narr = cand_narr
+        theme = cand_theme
+        scope = cand_scope
+        logger.info(
+            f"投稿対象を選択: rank={rank}/{len(candidates)} / "
+            f"経路={cand_impact.get('pass_path', '-')} / {cand.title}"
+        )
+        break
+
+    if item is None or impact is None:
+        logger.info(
+            f"候補{checked_count}件を確認したが、投稿基準を通るニュースなし"
+        )
         return
 
     logger.info(f"取得ニュース: {item.title}")
     logger.info(f"ソース: {item.source}")
 
-    # 投稿価値＋関連度＋話題性ゲート（画像生成・投稿文生成の前に判定する）。
-    impact = assess_market_impact(item)
-    pv = impact.get("post_value", 0)
-    rel = impact.get("us_equity_relevance", 0)
-    buzz = impact.get("social_buzz_score", 0)
-    narr = impact.get("narrative_value", 0)
-    theme = impact.get("theme_relevance", 0)
-    scope = impact.get("market_scope", "-")
-    should = impact.get("should_post", False)
-
     def _gate_log(**kw):
-        _news_log(selected_news_title=item.title, source=item.source, selected_post_type=mode,
-                  post_value=pv, us_equity_relevance=rel, social_buzz_score=buzz,
-                  narrative_value=narr, theme_relevance=theme, market_scope=scope, **kw)
+        _news_log(
+            selected_news_title=item.title, source=item.source,
+            selected_post_type=mode, post_value=pv,
+            us_equity_relevance=rel, social_buzz_score=buzz,
+            narrative_value=narr, theme_relevance=theme,
+            market_scope=scope, **kw,
+        )
 
-    if not should:
-        _gate_log(should_post=False, skip_reason=impact.get("skip_reason") or "low_value")
-        logger.info(f"基準未満のためスキップ（{impact.get('pass_path','-')}）: {impact.get('reason')}")
+    logger.info(
+        f"投稿可（経路={impact.get('pass_path', '-')}）: "
+        f"{impact.get('reason', '')}"
+    )
+
+    # #6 汎用まとめ/ランキング記事は1日1回まで
+    if _is_roundup_title(item.title) and _roundup_posted_today():
+        _gate_log(should_post=False, skip_reason="roundup_daily_cap",
+                  dry_run=DRY_RUN, actual_post_attempted=False)
+        logger.info("まとめ/ランキング記事は本日投稿済みのためスキップ（1日1回まで）")
         return
-    logger.info(f"投稿可（経路={impact.get('pass_path','-')}）: {impact.get('reason','')}")
+
+    if DRY_RUN:
+        logger.info("[INFO] should_post=true だが POST_ENABLED=false のため dry-run（未投稿）")
+
+    if mode in ("image", "diagram"):
+        diagram_judgement = assess_diagram_value(
+            item, get_openai_client(), OPENAI_REVIEW_MODEL,
+        )
+        logger.info(
+            "図解価値=%s/10 / clear=%s / structure=%s / facts=%s / numeric=%s / "
+            "should_diagram=%s / reason=%s",
+            diagram_judgement.get("score"),
+            diagram_judgement.get("has_clear_structure"),
+            diagram_judgement.get("structure_type"),
+            diagram_judgement.get("fact_count"),
+            diagram_judgement.get("numeric_fact_count"),
+            diagram_judgement.get("should_diagram"),
+            diagram_judgement.get("reason", ""),
+        )
+        if not diagram_judgement.get("should_diagram", False):
+            logger.info("図解価値が基準未達のため、通常文章へ自動変更")
+            mode = "normal"
 
     if mode == "image":
         handle_image_post(item, impact=impact)
@@ -609,9 +816,10 @@ def main(mode: str = "image") -> None:
         return
 
     tweet_id = post_tweet(tweet)
-    add_posted_entry(item, tweet_id=tweet_id, mode=mode)
-    _gate_log(should_post=True, skip_reason="-",
-              safety_check_result=safety_result, shortened=shortened, tweet_id=tweet_id)
+    add_posted_entry(item, tweet_id=tweet_id, mode=mode, impact=impact, text=tweet)
+    _gate_log(should_post=True, skip_reason=("-" if tweet_id else "dry_run_not_posted"),
+              safety_check_result=safety_result, shortened=shortened, tweet_id=tweet_id,
+              dry_run=DRY_RUN, actual_post_attempted=_post_enabled_now())
 
 
 if __name__ == "__main__":

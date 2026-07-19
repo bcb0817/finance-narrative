@@ -1,0 +1,35 @@
+{
+  "news": {
+    "enabled": true,
+    "type": "interval_minutes",
+    "every_minutes": 30,
+    "default_mode": "image"
+  },
+  "narrative": {
+    "enabled": true,
+    "type": "et_times_business_days",
+    "times": [
+      "08:30",
+      "09:35",
+      "16:05"
+    ]
+  },
+  "market-map": {
+    "enabled": true,
+    "type": "et_times_business_days",
+    "times": [
+      "09:35"
+    ]
+  },
+  "weekly": {
+    "enabled": true,
+    "type": "weekly_jst",
+    "weekday": 6,
+    "time": "21:00"
+  },
+  "report": {
+    "enabled": true,
+    "type": "daily_jst",
+    "time": "22:00"
+  }
+}

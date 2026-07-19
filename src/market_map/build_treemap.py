@@ -1,55 +1,34 @@
-"""market_cap 重み付けの treemap ヒートマップ画像を生成する(squarify + Pillow)。
-
-- タイルサイズ: market_cap
-- カラー:       percent_change(下落=赤 / 上昇=緑)
-- タイル内:     企業ロゴ(取得できた上位銘柄) + ticker + percent_change
-- 上部:         見出し(headline、英語のまま)
-- ロゴ:         Clearbit Logo API からベストエフォートで取得(失敗してもタイルは描画)
-
-plotly ではタイル座標が取れずロゴを正確に貼れないため、squarify で配置を自前計算し
-Pillow でピクセル単位に描画する方式に変更している。
-"""
+"""Render a market-cap weighted heatmap with company logos."""
 from __future__ import annotations
 
 import logging
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 import requests
 import squarify
-from PIL import Image, ImageDraw, ImageFont
-
-logger = logging.getLogger(__name__)
+from PIL import Image, ImageDraw
 
 from .ticker_domains import TICKER_DOMAINS
 
-# 色(RGB)
-BG = (11, 15, 23)            # #0b0f17 背景
-RED = (185, 28, 28)          # #b91c1c 下落
-NEUTRAL = (31, 41, 55)       # #1f2937 中立
-GREEN = (21, 128, 61)        # #15803d 上昇
+logger = logging.getLogger(__name__)
+
+BG = (7, 11, 18)
+RED = (239, 48, 64)
+NEUTRAL = (45, 55, 72)
+GREEN = (0, 200, 120)
 WHITE = (255, 255, 255)
+TILE_BORDER = (9, 14, 23)
 
 CLEARBIT = "https://logo.clearbit.com/{domain}"
-
-_FONT_PATHS_BOLD = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-]
-_FONT_PATHS_REG = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-]
+GOOGLE_FAVICON = "https://www.google.com/s2/favicons?domain={domain}&sz=128"
+LOGO_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "logo_cache"
 
 
 def _font(size: int, bold: bool = False):
-    paths = _FONT_PATHS_BOLD if bold else _FONT_PATHS_REG
-    for p in paths:
-        try:
-            return ImageFont.truetype(p, size)
-        except Exception:  # noqa: BLE001
-            continue
-    return ImageFont.load_default()
+    from common.fonts import get_font
+    return get_font(size, bold)
 
 
 def _lerp(a, b, t):
@@ -57,25 +36,53 @@ def _lerp(a, b, t):
 
 
 def _color_for(pct: float, clip: float):
-    """percent_change を 赤->中立->緑 に補間。"""
-    p = max(-clip, min(clip, pct))
-    t = (p + clip) / (2 * clip)  # 0..1
-    if t < 0.5:
-        return _lerp(RED, NEUTRAL, t / 0.5)
-    return _lerp(NEUTRAL, GREEN, (t - 0.5) / 0.5)
+    """Map returns to vivid red/green while preserving intensity."""
+    if clip <= 0:
+        return NEUTRAL
+    p = max(-clip, min(clip, float(pct)))
+    if abs(p) < 0.0001:
+        return NEUTRAL
+    strength = 0.28 + 0.72 * ((abs(p) / clip) ** 0.5)
+    return _lerp(NEUTRAL, GREEN if p > 0 else RED, min(1.0, strength))
 
 
-def _fetch_logo(domain: str) -> Image.Image | None:
-    """Clearbit からロゴ(RGBA)を取得。失敗時は None。"""
-    try:
-        url = CLEARBIT.format(domain=domain)
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200 or not resp.content:
-            return None
-        return Image.open(BytesIO(resp.content)).convert("RGBA")
-    except Exception as e:  # noqa: BLE001
-        logger.debug("logo fetch failed for %s: %s", domain, e)
+def _normalize_domain(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.replace("https://", "").replace("http://", "").split("/")[0].strip()
+
+
+def _fetch_logo(domain: str, ticker: str = "") -> Image.Image | None:
+    """Load a cached logo, falling back from Clearbit to a domain favicon."""
+    safe_name = "".join(c for c in (ticker or domain) if c.isalnum() or c in "-_").lower()
+    if not safe_name:
         return None
+    cache_path = LOGO_CACHE_DIR / f"{safe_name}.png"
+    if cache_path.exists():
+        try:
+            return Image.open(cache_path).convert("RGBA")
+        except OSError:
+            logger.debug("invalid logo cache: %s", cache_path)
+
+    headers = {"User-Agent": "finance-narrative-market-map/1.0"}
+    urls = (
+        CLEARBIT.format(domain=domain),
+        GOOGLE_FAVICON.format(domain=domain),
+    )
+    for url in urls:
+        try:
+            resp = requests.get(url, headers=headers, timeout=6)
+            if resp.status_code != 200 or not resp.content:
+                continue
+            logo = Image.open(BytesIO(resp.content)).convert("RGBA")
+            if logo.width < 16 or logo.height < 16:
+                continue
+            LOGO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            logo.save(cache_path, format="PNG")
+            return logo
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("logo fetch failed for %s via %s: %s", domain, url, exc)
+    return None
 
 
 def _text_size(draw, text, font):
@@ -94,25 +101,14 @@ def build_treemap(
     height: int = 900,
     header_h: int = 80,
 ) -> str:
-    """treemap PNG を生成して out_path を返す。
-
-    Args:
-        color_clip:  色付けの上下限(±4%)
-        label_top_n: ticker/percent ラベルを出す上位銘柄数(時価総額順)
-        logo_top_n:  ロゴ取得を試みる上位銘柄数(時価総額順)
-    """
+    """Create and save a market-cap weighted treemap PNG."""
     df = df.sort_values("market_cap", ascending=False).reset_index(drop=True)
-
-    # 配置計算(squarify)。ヘッダ下の領域に敷き詰める
-    area_x, area_y = 0, header_h
     area_w, area_h = width, height - header_h
     norm = squarify.normalize_sizes(df["market_cap"].tolist(), area_w, area_h)
-    rects = squarify.squarify(norm, area_x, area_y, area_w, area_h)
+    rects = squarify.squarify(norm, 0, header_h, area_w, area_h)
 
     img = Image.new("RGB", (width, height), BG)
     draw = ImageDraw.Draw(img)
-
-    # ヘッダ見出し
     draw.text((20, 22), headline, font=_font(34, bold=True), fill=WHITE)
 
     for i, rect in enumerate(rects):
@@ -120,50 +116,51 @@ def build_treemap(
         x0, y0 = rect["x"], rect["y"]
         w, h = rect["dx"], rect["dy"]
         x1, y1 = min(x0 + w, width), min(y0 + h, height)
-
-        draw.rectangle([x0, y0, x1, y1], fill=_color_for(row.percent_change, color_clip),
-                       outline=BG, width=1)
-
+        draw.rectangle(
+            [x0, y0, x1, y1],
+            fill=_color_for(row.percent_change, color_clip),
+            outline=TILE_BORDER,
+            width=2,
+        )
         if w < 28 or h < 22:
-            continue  # 小さすぎるタイルは何も描かない
+            continue
 
         cx, cy = x0 + w / 2, y0 + h / 2
         pct_text = f"{row.percent_change * 100:+.1f}%"
-
-        # ロゴ(上位 logo_top_n かつタイルが十分大きい場合のみ)
         logo_pasted = False
         if i < logo_top_n and w >= 64 and h >= 64:
-            domain = row.logo_url or TICKER_DOMAINS.get(row.ticker)
+            explicit_domain = _normalize_domain(getattr(row, "logo_url", ""))
+            domain = explicit_domain or TICKER_DOMAINS.get(str(row.ticker), "")
             if domain:
-                # logo_url がURLでなくドメイン文字列のときも許容
-                domain = domain.replace("https://", "").replace("http://", "").strip("/")
-                logo = _fetch_logo(domain)
+                logo = _fetch_logo(domain, str(row.ticker))
                 if logo is not None:
-                    target = int(min(w, h) * 0.42)
+                    target = max(20, int(min(w, h) * 0.34))
                     logo.thumbnail((target, target))
                     lx = int(cx - logo.width / 2)
                     ly = int(cy - logo.height / 2 - h * 0.12)
+                    pad = max(4, target // 10)
+                    draw.rounded_rectangle(
+                        [lx - pad, ly - pad, lx + logo.width + pad, ly + logo.height + pad],
+                        radius=max(5, pad * 2),
+                        fill=(255, 255, 255),
+                    )
                     img.paste(logo, (lx, ly), logo)
                     logo_pasted = True
 
-        # テキスト(上位 label_top_n のみ)
         if i < label_top_n:
             fsize = max(10, min(20, int(w / 6)))
-            tfont = _font(fsize, bold=True)
-            pfont = _font(max(9, fsize - 2))
-
-            tw, th = _text_size(draw, row.ticker, tfont)
-            pw, ph = _text_size(draw, pct_text, pfont)
-
-            if logo_pasted:
-                ty = int(cy + h * 0.10)
-            else:
-                ty = int(cy - (th + ph) / 2)
-
+            ticker_font = _font(fsize, bold=True)
+            pct_font = _font(max(9, fsize - 2))
+            ticker = str(row.ticker)
+            tw, th = _text_size(draw, ticker, ticker_font)
+            pw, ph = _text_size(draw, pct_text, pct_font)
+            ty = int(cy + h * 0.10) if logo_pasted else int(cy - (th + ph) / 2)
             if tw <= w - 4 and (th + ph) <= h - 4:
-                draw.text((cx - tw / 2, ty), row.ticker, font=tfont, fill=WHITE)
-                draw.text((cx - pw / 2, ty + th + 2), pct_text, font=pfont, fill=WHITE)
+                draw.text((cx - tw / 2, ty), ticker, font=ticker_font, fill=WHITE)
+                draw.text((cx - pw / 2, ty + th + 2), pct_text, font=pct_font, fill=WHITE)
 
-    img.save(out_path)
-    logger.info("treemap 画像を出力: %s", out_path)
-    return out_path
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out)
+    logger.info("treemap image saved: %s", out)
+    return str(out)

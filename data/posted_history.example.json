@@ -1,0 +1,10 @@
+[
+  {
+    "url": "https://example.com/finance-news",
+    "title": "Example market headline",
+    "source": "Example News",
+    "posted_at": "2000-01-01T00:00:00+09:00",
+    "tweet_id": "0000000000000000000",
+    "mode": "normal"
+  }
+]
