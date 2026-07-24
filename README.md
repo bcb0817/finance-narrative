@@ -214,9 +214,10 @@ The bot keeps its existing safety and posting pipeline while adding controlled g
   `DISCORD_ALERTS_ENABLED=true` and `DISCORD_WEBHOOK_URL` in `.env` to deliver
   only newly detected and resolved alert state changes to Discord.
 - Set `DISCORD_POST_NOTIFICATIONS_ENABLED=true` to mirror successful X posts
-  with their full text and X URL. Set `DISCORD_LOGS_ENABLED=true` to deliver
-  redacted runtime logs in rate-limit-friendly batches; unsent logs remain in
-  the local queue and are retried after later runs.
+  with their full text and X URL. Production uses result-only Discord
+  notifications: keep `DISCORD_LOGS_ENABLED=false` so detailed stdout, stderr,
+  decision, and runtime logs stay local. Enable it only temporarily when
+  detailed remote diagnostics are explicitly required.
 
 Inspection commands:
 
