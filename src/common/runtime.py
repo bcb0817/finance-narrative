@@ -81,10 +81,18 @@ def post_enabled() -> bool:
 
 def _append_jsonl(path: Path, record: dict) -> None:
     try:
+        from common.json_utils import make_json_safe
         record = dict(record)
         record.setdefault("ts", datetime.now(JST).isoformat())
+        record = make_json_safe(record)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        try:
+            from common.operations_alerts import queue_discord_log
+            queue_discord_log(path.name, json.dumps(record, ensure_ascii=False),
+                              level="ERROR" if path.name=="errors.jsonl" else "INFO")
+        except Exception:
+            pass
     except OSError:
         pass  # ログ書き込み失敗でBotは止めない
 
@@ -107,6 +115,17 @@ def log_run(record: dict) -> None:
 _FILE_LOGGING_SET = False
 
 
+class _DiscordBufferHandler(logging.Handler):
+    """Queue standard logging records without performing network I/O."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            from common.operations_alerts import queue_discord_log
+            queue_discord_log(record.name, self.format(record), level=record.levelname)
+        except Exception:
+            pass
+
+
 def setup_file_logging() -> None:
     """標準出力に加えて logs/bot.log にも残す（多重追加を防止）。"""
     global _FILE_LOGGING_SET
@@ -116,6 +135,10 @@ def setup_file_logging() -> None:
         fh = logging.FileHandler(log_dir() / "bot.log", encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
         logging.getLogger().addHandler(fh)
+        dh = _DiscordBufferHandler()
+        dh.setLevel(getattr(logging,os.getenv("DISCORD_LOG_LEVEL","INFO").upper(),logging.INFO))
+        dh.setFormatter(logging.Formatter("%(message)s"))
+        logging.getLogger().addHandler(dh)
     except OSError:
         pass
     _FILE_LOGGING_SET = True

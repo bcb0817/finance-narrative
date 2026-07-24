@@ -217,6 +217,10 @@ data/*.lock
 !data/*.example.jsonl
 outputs/
 backups/
+.local-backups/
+data/openai/
+data/xai/
+data/logo_cache/
 *.bak-*
 knowledge/*
 !knowledge/README.md

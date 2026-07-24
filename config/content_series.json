@@ -1,0 +1,8 @@
+{
+  "series": [
+    {"series_id":"us_market_3lines","title":"昨夜の米国市場3行まとめ","schedule":"weekday_morning_jst","enabled":false,"target_post_type":"scheduled_summary","minimum_value_score":7,"maximum_frequency":"daily","last_posted_at":null},
+    {"series_id":"tonight_3points","title":"今夜の米国株で見る3項目","schedule":"weekday_evening_jst","enabled":false,"target_post_type":"scheduled_summary","minimum_value_score":7,"maximum_frequency":"daily","last_posted_at":null},
+    {"series_id":"semis_missing_factor","title":"半導体株の見落とされている材料","schedule":"manual","enabled":false,"target_post_type":"second_order_effect","minimum_value_score":8,"maximum_frequency":"weekly","last_posted_at":null},
+    {"series_id":"market_misconception","title":"市場が誤解していること","schedule":"manual","enabled":false,"target_post_type":"misconception","minimum_value_score":8,"maximum_frequency":"weekly","last_posted_at":null}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "experiments": [
+    {
+      "experiment_id": "post-style-growth-v1",
+      "hypothesis": "独自解説型の投稿は単純速報より成長KPIが高い",
+      "variants": ["misconception", "second_order_effect", "comparison"],
+      "primary_metric": "growth_score",
+      "secondary_metrics": ["repost_rate", "impressions_per_hour"],
+      "minimum_sample_per_variant": 5,
+      "status": "active",
+      "started_at": "2026-07-22",
+      "stop_condition": "各variantが最低サンプル数を満たした後に週次評価"
+    }
+  ]
+}

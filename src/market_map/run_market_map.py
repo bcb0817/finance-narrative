@@ -47,6 +47,13 @@ def _force() -> bool:
 
 
 def main():
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        et_now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        et_now = datetime.now()
+    session = "pre_close" if (et_now.hour, et_now.minute) >= (15, 30) else "open"
     try:
         from common.runtime import output_dir
         out = str(output_dir("market_map") / "market_map.png")
@@ -54,7 +61,7 @@ def main():
         out = "outputs/market_map/market_map.png"
 
     dry_run = not _post_enabled()
-    post = generate_market_map_post(out_path=out)
+    post = generate_market_map_post(out_path=out, session=session)
     move = post.get("total_change")
     cap_change = post.get("total_change")  # S&P500時価総額の増減（USD）
     total_pct = post.get("total_pct", 0.0)
@@ -74,12 +81,13 @@ def main():
     gate_abs = abs(move or 0.0) >= min_abs
     gate_pct = abs(total_pct) >= min_pct
     gate_skew = skew >= min_skew
-    gate_pass = gate_abs or gate_pct or gate_skew or _force()
+    scheduled_pre_close = session == "pre_close"
+    gate_pass = gate_abs or gate_pct or gate_skew or _force() or scheduled_pre_close
 
     print(f"[GATE] |Δmcap|=${abs(move or 0)/1e9:.0f}B(>= {min_abs/1e9:.0f}B:{gate_abs}) "
           f"| idx≈{total_pct:+.2f}%(>= {min_pct}%:{gate_pct}) "
           f"| skew={skew:.2f}({top_sector})(>= {min_skew}:{gate_skew}) "
-          f"| force={_force()} -> pass={gate_pass}")
+          f"| force={_force()} | scheduled_pre_close={scheduled_pre_close} -> pass={gate_pass}")
 
     if not gate_pass:
         _decision_log(
@@ -118,10 +126,13 @@ def main():
             source="market_map",
             bot="market-map",
             mode="market-map",
+            notify_discord=True,
             extra={
                 "market_move": move,
                 "market_cap_change": cap_change,
                 "market_scope": "market_map",
+                "market_session": session,
+                "scheduled_market_summary": scheduled_pre_close,
             },
         )
 

@@ -50,5 +50,10 @@ class ChildOutputEncodingTests(unittest.TestCase):
         self.assertEqual(bot._decode_child_output(message.encode("cp932")), message)
 
 
+    def test_failure_summary_uses_last_nonempty_stderr_line(self):
+        stderr = "Traceback (most recent call last):\n  ...\nValueError: bad input\n"
+        self.assertEqual(bot._failure_summary(stderr), "ValueError: bad input")
+
+
 if __name__ == "__main__":
     unittest.main()

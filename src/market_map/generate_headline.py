@@ -56,13 +56,14 @@ def _signed_jp(value: float) -> str:
     return f"{sign}{format_usd_jp(value)}"
 
 
-def make_headline(total_change: float) -> str:
+def make_headline(total_change: float, session: str = "open") -> str:
     """画像上部用の英語見出し(Kalshi風)。
 
     例: JUST IN: $1.5T erased from the S&P 500 at the open
     """
     verb = "erased from" if total_change < 0 else "added to"
-    return f"JUST IN: {format_usd(total_change)} {verb} the S&P 500 at the open"
+    timing = "near the close" if session == "pre_close" else "at the open"
+    return f"JUST IN: {format_usd(total_change)} {verb} the S&P 500 {timing}"
 
 
 def make_headline_jp(total_change: float) -> str:
@@ -79,6 +80,7 @@ def make_caption(
     total_change: float,
     sector_summary: pd.DataFrame,
     n_movers: int = 5,
+    session: str = "open",
 ) -> str:
     """日本語の投稿文を生成する。
 
@@ -106,8 +108,9 @@ def make_caption(
         f"{r.ticker} {r.percent_change * 100:+.1f}%" for r in decliners.itertuples()
     )
 
+    timing = "取引終了直前" if session == "pre_close" else "寄り付き"
     lines = [
-        f"【速報】寄り付きでS&P500の時価総額が約{format_usd_jp(total_change)}{direction}。",
+        f"【速報】{timing}でS&P500の時価総額が約{format_usd_jp(total_change)}{direction}。",
         "",
         f"売り主導：{_sector_jp(worst_sector['sector'])}（{_signed_jp(worst_sector['market_cap_change'])}）",
         f"買い主導：{_sector_jp(best_sector['sector'])}（{_signed_jp(best_sector['market_cap_change'])}）",

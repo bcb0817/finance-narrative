@@ -1,0 +1,11 @@
+{
+  "description": "X Searchで優先監視するアカウント。最大20件。実在アカウントは運用者が確認して有効化する。",
+  "accounts": [
+    {
+      "username": "example",
+      "category": "journalist",
+      "enabled": false,
+      "priority": 3
+    }
+  ]
+}

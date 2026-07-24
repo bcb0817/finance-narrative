@@ -1,6 +1,6 @@
 """
 narrative_renderer.py
-「今日の市場ナラティブ」を1枚のPNGに描画する（Pillow/ダーク）。
+「米国株の注目材料」を1枚のPNGに描画する（Pillow/ダーク）。
 top_narrative 1件のみを表示する。3カード表示・最重要テーマ欄は廃止。
 
 入力 top dict:
@@ -32,6 +32,7 @@ from fonts import get_font  # 共通フォント解決（FONT_PATH対応・ク�
 
 W = 1080
 PAD = 48
+DISPLAY_TITLE = "米国株の注目材料"
 
 
 def _f(size, bold=False):
@@ -73,7 +74,7 @@ def render_narrative(top: dict, out_path: str) -> str:
     f_small = _f(24)
 
     y = PAD
-    d.text((PAD, y), "市場ナラティブ", font=f_h1, fill=TEXT)
+    d.text((PAD, y), DISPLAY_TITLE, font=f_h1, fill=TEXT)
     pv = top.get("post_value", "")
     meta = f"投稿価値 {pv}/10"
     mw = d.textlength(meta, font=f_meta)

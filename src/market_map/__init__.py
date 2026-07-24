@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["generate_market_map_post", "post_to_x"]
 
 
-def generate_market_map_post(out_path: str = "market_map.png") -> dict:
+def generate_market_map_post(out_path: str = "market_map.png", session: str = "open") -> dict:
     """寄り付きヒートマップ投稿の素材を生成する。
 
     Returns:
@@ -38,19 +38,21 @@ def generate_market_map_post(out_path: str = "market_map.png") -> dict:
     仕様11: 画像生成に失敗してもBotを落とさない。
     image_path が None の場合、呼び出し側Botは通常投稿にフォールバックすること。
     """
-    df = fetch_market_data()
+    df = fetch_market_data(session=session)
     df, total_change, sector_summary = calculate_market_cap_move(df)
 
     # 投稿ゲート用の指標
     total_mcap = float(df["market_cap"].sum()) or 1.0
     total_pct = total_change / total_mcap * 100.0  # 指数近似の変化率(%)
     # セクター偏り: |変化|合計に占める最大セクターの割合（0〜1）
-    abs_by_sector = sector_summary.abs()
+    # calculate_market_cap_move returns a two-column frame after reset_index().
+    # Only the numeric movement column participates in the concentration metric.
+    abs_by_sector = sector_summary.set_index("sector")["market_cap_change"].abs()
     skew = float(abs_by_sector.max() / abs_by_sector.sum()) if float(abs_by_sector.sum()) else 0.0
     top_sector = str(abs_by_sector.idxmax()) if len(abs_by_sector) else ""
 
-    headline = make_headline(total_change)
-    caption = make_caption(df, total_change, sector_summary)
+    headline = make_headline(total_change, session=session)
+    caption = make_caption(df, total_change, sector_summary, session=session)
 
     image_path: str | None = None
     try:
@@ -62,7 +64,7 @@ def generate_market_map_post(out_path: str = "market_map.png") -> dict:
 
     return {"headline": headline, "caption": caption, "image_path": image_path,
             "total_change": total_change, "total_pct": total_pct,
-            "sector_skew": skew, "top_sector": top_sector}
+            "sector_skew": skew, "top_sector": top_sector, "session": session}
 
 
 if __name__ == "__main__":
