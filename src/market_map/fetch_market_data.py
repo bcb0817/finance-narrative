@@ -103,6 +103,32 @@ def _fetch_one(ticker: str, session: str = "open") -> dict | None:
         return None
 
 
+def fetch_index_snapshot(symbol: str = "^GSPC") -> dict:
+    """指数の日中反転判定に必要な価格を取得する。失敗時は空dictを返す。"""
+    try:
+        fi = yf.Ticker(symbol).fast_info
+        current = _safe(fi, "last_price")
+        previous_close = _safe(fi, "previous_close", "regular_market_previous_close")
+        day_high = _safe(fi, "day_high")
+        day_low = _safe(fi, "day_low")
+        if not all(_is_valid(v) for v in (current, previous_close, day_high, day_low)):
+            return {}
+        previous_close = float(previous_close)
+        return {
+            "symbol": symbol,
+            "current": float(current),
+            "previous_close": previous_close,
+            "day_high": float(day_high),
+            "day_low": float(day_low),
+            "current_pct": (float(current) / previous_close - 1.0) * 100.0,
+            "day_high_pct": (float(day_high) / previous_close - 1.0) * 100.0,
+            "day_low_pct": (float(day_low) / previous_close - 1.0) * 100.0,
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning("index snapshot fetch failed for %s: %s", symbol, e)
+        return {}
+
+
 def fetch_market_data(max_workers: int = 8, session: str = "open") -> pd.DataFrame:
     """S&P500 全銘柄の寄り付きデータを取得して結合する。
 

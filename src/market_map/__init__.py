@@ -16,8 +16,8 @@ import logging
 
 from .build_treemap import build_treemap
 from .calculate_market_cap_move import calculate_market_cap_move
-from .fetch_market_data import fetch_market_data
-from .generate_headline import make_caption, make_headline
+from .fetch_market_data import fetch_index_snapshot, fetch_market_data
+from .generate_headline import make_caption, make_headline, make_reversal_headline
 from .post_to_x import post_to_x
 
 logger = logging.getLogger(__name__)
@@ -67,8 +67,28 @@ def generate_market_map_post(out_path: str = "market_map.png", session: str = "o
             max_sector_pct_name = str(sector_pcts.abs().idxmax())
             max_sector_pct = float(sector_pcts.loc[max_sector_pct_name])
 
-    headline = make_headline(total_change, session=session)
-    caption = make_caption(df, total_change, sector_summary, session=session)
+    index_snapshot = fetch_index_snapshot() if session == "pre_close" else {}
+    current_pct = float(index_snapshot.get("current_pct", 0.0) or 0.0)
+    high_pct = float(index_snapshot.get("day_high_pct", 0.0) or 0.0)
+    low_pct = float(index_snapshot.get("day_low_pct", 0.0) or 0.0)
+    intraday_reversal_pct = 0.0
+    if high_pct > 0.0 and current_pct <= 0.0:
+        intraday_reversal_pct = current_pct - high_pct
+    elif low_pct < 0.0 and current_pct >= 0.0:
+        intraday_reversal_pct = current_pct - low_pct
+
+    if intraday_reversal_pct:
+        headline = make_reversal_headline(intraday_reversal_pct)
+    else:
+        headline = make_headline(total_change, session=session)
+    caption = make_caption(
+        df,
+        total_change,
+        sector_summary,
+        session=session,
+        reversal_pct=intraday_reversal_pct,
+        index_current_pct=current_pct,
+    )
 
     image_path: str | None = None
     try:
@@ -85,6 +105,8 @@ def generate_market_map_post(out_path: str = "market_map.png", session: str = "o
             "breadth_ratio": breadth_ratio,
             "max_sector_pct": max_sector_pct,
             "max_sector_pct_name": max_sector_pct_name,
+            "intraday_reversal_pct": intraday_reversal_pct,
+            "index_current_pct": current_pct,
             "session": session}
 
 

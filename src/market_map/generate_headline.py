@@ -66,6 +66,13 @@ def make_headline(total_change: float, session: str = "open") -> str:
     return f"JUST IN: {format_usd(total_change)} {verb} the S&P 500 {timing}"
 
 
+def make_reversal_headline(reversal_pct: float) -> str:
+    """前日終値をまたぐ大幅な日中反転用の画像見出し。"""
+    if reversal_pct < 0:
+        return "JUST IN: S&P 500 erases all gains and turns red"
+    return "JUST IN: S&P 500 recovers all losses and turns green"
+
+
 def make_headline_jp(total_change: float) -> str:
     """画像上部を日本語にしたい場合の見出し。
 
@@ -81,6 +88,8 @@ def make_caption(
     sector_summary: pd.DataFrame,
     n_movers: int = 5,
     session: str = "open",
+    reversal_pct: float = 0.0,
+    index_current_pct: float = 0.0,
 ) -> str:
     """日本語の投稿文を生成する。
 
@@ -121,8 +130,23 @@ def make_caption(
     )
 
     timing = "取引終了直前" if session == "pre_close" else "寄り付き"
+    if reversal_pct < 0:
+        opening = (
+            f"【速報】S&P500は日中の上昇分を全て失い、"
+            f"前日比{index_current_pct:+.2f}%へ反転"
+            f"（高値から{abs(reversal_pct):.2f}ポイント低下）。"
+        )
+    elif reversal_pct > 0:
+        opening = (
+            f"【速報】S&P500は日中の下落分を取り戻し、"
+            f"前日比{index_current_pct:+.2f}%へ反転"
+            f"（安値から{abs(reversal_pct):.2f}ポイント上昇）。"
+        )
+    else:
+        opening = f"【速報】{timing}でS&P500の時価総額が約{format_usd_jp(total_change)}{direction}。"
+
     lines = [
-        f"【速報】{timing}でS&P500の時価総額が約{format_usd_jp(total_change)}{direction}。",
+        opening,
         "",
         f"売り主導：{_sector_jp(worst_sector['sector'])}（{_signed_jp(worst_sector['market_cap_change'])}）",
         f"買い主導：{_sector_jp(best_sector['sector'])}（{_signed_jp(best_sector['market_cap_change'])}）",

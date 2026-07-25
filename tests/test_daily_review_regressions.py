@@ -38,6 +38,33 @@ class DailyReviewRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(result["sector_skew"], 2 / 3)
         self.assertEqual(result["top_sector"], "Tech")
 
+    def test_pre_close_market_map_detects_cross_zero_reversal(self):
+        frame = pd.DataFrame({
+            "ticker": ["AAA", "BBB"],
+            "sector": ["Tech", "Energy"],
+            "market_cap": [100.0, 200.0],
+            "percent_change": [-0.01, 0.01],
+        })
+        sectors = pd.DataFrame({
+            "sector": ["Tech", "Energy"],
+            "market_cap_change": [-20.0, 10.0],
+        })
+        snapshot = {
+            "current_pct": -0.05,
+            "day_high_pct": 0.80,
+            "day_low_pct": -0.10,
+        }
+
+        with patch("market_map.fetch_market_data", return_value=frame), \
+             patch("market_map.calculate_market_cap_move", return_value=(frame, -10.0, sectors)), \
+             patch("market_map.fetch_index_snapshot", return_value=snapshot), \
+             patch("market_map.build_treemap", return_value="map.png"):
+            result = generate_market_map_post(session="pre_close")
+
+        self.assertAlmostEqual(result["intraday_reversal_pct"], -0.85)
+        self.assertIn("erases all gains and turns red", result["headline"])
+        self.assertIn("日中の上昇分を全て失い", result["caption"])
+
     def test_daily_analyze_limit_is_normal_skip_not_error(self):
         now=datetime.now(performance_learning.JST)
         metrics=[{

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from local_finance_bot import ET, next_run_utc
-from market_map.generate_headline import make_caption, make_headline
+from market_map.generate_headline import make_caption, make_headline, make_reversal_headline
 from market_map.run_market_map import _market_move_gate
 
 
@@ -55,6 +55,22 @@ class MarketMapSessionTests(unittest.TestCase):
         self.assertTrue(rotation["pass"])
         self.assertFalse(quiet_sector["rotation"])
 
+    def test_large_cross_zero_intraday_reversal_passes(self):
+        reversal = _market_move_gate(
+            50e9, -0.02, 0.3, 0.48, -0.4, -0.82,
+            min_abs=500e9, min_pct=1.0, min_skew=0.7,
+            min_reversal_pct=0.75,
+        )
+        small_reversal = _market_move_gate(
+            50e9, -0.02, 0.3, 0.48, -0.4, -0.45,
+            min_abs=500e9, min_pct=1.0, min_skew=0.7,
+            min_reversal_pct=0.75,
+        )
+        self.assertTrue(reversal["reversal"])
+        self.assertTrue(reversal["pass"])
+        self.assertFalse(small_reversal["reversal"])
+        self.assertFalse(small_reversal["pass"])
+
     def test_caption_explains_breadth_rotation(self):
         frame = pd.DataFrame([
             {"ticker": f"UP{i}", "percent_change": .01, "market_cap": 100.0}
@@ -82,6 +98,25 @@ class MarketMapSessionTests(unittest.TestCase):
         ])
         self.assertIn("near the close",make_headline(-1e12,session="pre_close"))
         self.assertIn("取引終了直前",make_caption(frame,-1e12,sectors,session="pre_close"))
+
+    def test_reversal_headline_and_caption_do_not_invent_a_cause(self):
+        frame = pd.DataFrame([
+            {"ticker": "AAA", "percent_change": -.02, "market_cap": 100.0},
+            {"ticker": "BBB", "percent_change": .01, "market_cap": 100.0},
+        ])
+        sectors = pd.DataFrame([
+            {"sector": "Information Technology", "market_cap_change": -20.0},
+            {"sector": "Health Care", "market_cap_change": 10.0},
+        ])
+        headline = make_reversal_headline(-0.82)
+        caption = make_caption(
+            frame, -10.0, sectors, session="pre_close",
+            reversal_pct=-0.82, index_current_pct=-0.02,
+        )
+        self.assertIn("erases all gains and turns red", headline)
+        self.assertIn("日中の上昇分を全て失い", caption)
+        self.assertIn("前日比-0.02%", caption)
+        self.assertNotIn("イラン", caption)
 
     def test_market_map_has_pre_close_et_run(self):
         now=datetime(2026,7,24,14,0,tzinfo=ET).astimezone(timezone.utc)

@@ -52,12 +52,14 @@ def _market_move_gate(
     skew: float,
     breadth_ratio: float = 0.5,
     max_sector_pct: float = 0.0,
+    intraday_reversal_pct: float = 0.0,
     *,
     min_abs: float,
     min_pct: float,
     min_skew: float,
     min_breadth: float = 0.7,
     min_sector_pct: float = 1.5,
+    min_reversal_pct: float = 0.75,
     force: bool = False,
 ) -> dict:
     """Evaluate large moves only; scheduled slots never bypass this gate."""
@@ -71,13 +73,15 @@ def _market_move_gate(
         or breadth_ratio <= 1.0 - min_breadth
     )
     gate_rotation = breadth_extreme and abs(max_sector_pct) >= min_sector_pct
+    gate_reversal = abs(intraday_reversal_pct) >= min_reversal_pct
     return {
         "abs": gate_abs,
         "pct": gate_pct,
         "skew": gate_skew,
         "rotation": gate_rotation,
+        "reversal": gate_reversal,
         "force": force,
-        "pass": gate_abs or gate_pct or gate_skew or gate_rotation or force,
+        "pass": gate_abs or gate_pct or gate_skew or gate_rotation or gate_reversal or force,
     }
 
 
@@ -103,6 +107,7 @@ def main():
     skew = post.get("sector_skew", 0.0)
     breadth_ratio = post.get("breadth_ratio", 0.5)
     max_sector_pct = post.get("max_sector_pct", 0.0)
+    intraday_reversal_pct = post.get("intraday_reversal_pct", 0.0)
     max_sector_pct_name = post.get("max_sector_pct_name", "")
     top_sector = post.get("top_sector", "")
     headline = post.get("headline", "")
@@ -115,23 +120,27 @@ def main():
     min_skew = _env_float("MARKET_MAP_SECTOR_SKEW", 0.7)
     min_breadth = _env_float("MARKET_MAP_MIN_BREADTH_RATIO", 0.7)
     min_sector_pct = _env_float("MARKET_MAP_MIN_SECTOR_PCT", 1.5)
+    min_reversal_pct = _env_float("MARKET_MAP_MIN_INTRADAY_REVERSAL_PCT", 0.75)
     gate = _market_move_gate(
         move,
         total_pct,
         skew,
         breadth_ratio,
         max_sector_pct,
+        intraday_reversal_pct,
         min_abs=min_abs,
         min_pct=min_pct,
         min_skew=min_skew,
         min_breadth=min_breadth,
         min_sector_pct=min_sector_pct,
+        min_reversal_pct=min_reversal_pct,
         force=_force(),
     )
     gate_abs = gate["abs"]
     gate_pct = gate["pct"]
     gate_skew = gate["skew"]
     gate_rotation = gate["rotation"]
+    gate_reversal = gate["reversal"]
     gate_pass = gate["pass"]
 
     print(f"[GATE] |Δmcap|=${abs(move or 0)/1e9:.0f}B(>= {min_abs/1e9:.0f}B:{gate_abs}) "
@@ -140,6 +149,8 @@ def main():
           f"|move|>={min_abs/2/1e9:.0f}B:{gate_skew}) "
           f"| breadth={breadth_ratio:.1%}, sector={max_sector_pct:+.2f}%"
           f"({max_sector_pct_name})(rotation:{gate_rotation}) "
+          f"| reversal={intraday_reversal_pct:+.2f}pt"
+          f"(>= {min_reversal_pct}pt:{gate_reversal}) "
           f"| force={_force()} -> pass={gate_pass}")
 
     if not gate_pass:
@@ -149,7 +160,7 @@ def main():
                 f"abs>={min_abs/1e9:.0f}B or pct>={min_pct}% or "
                 f"(skew>={min_skew} and abs>={min_abs/2/1e9:.0f}B) or "
                 f"(breadth>={min_breadth:.0%}/<={1-min_breadth:.0%} and "
-                f"sector>={min_sector_pct}%)"
+                f"sector>={min_sector_pct}%) or reversal>={min_reversal_pct}pt"
             ),
             should_post=False, skip_reason="market_gate_not_met",
             post_enabled=_post_enabled(), dry_run=dry_run,
@@ -194,6 +205,8 @@ def main():
                 "breadth_ratio": breadth_ratio,
                 "max_sector_pct": max_sector_pct,
                 "rotation_detected": gate_rotation,
+                "intraday_reversal_pct": intraday_reversal_pct,
+                "intraday_reversal_detected": gate_reversal,
             },
         )
 
@@ -206,7 +219,7 @@ def main():
             f"abs>={min_abs/1e9:.0f}B or pct>={min_pct}% or "
             f"(skew>={min_skew} and abs>={min_abs/2/1e9:.0f}B) or "
             f"(breadth>={min_breadth:.0%}/<={1-min_breadth:.0%} and "
-            f"sector>={min_sector_pct}%)"
+            f"sector>={min_sector_pct}%) or reversal>={min_reversal_pct}pt"
         ),
         should_post=should_post, skip_reason=skip_reason,
         post_enabled=_post_enabled(), dry_run=dry_run,
