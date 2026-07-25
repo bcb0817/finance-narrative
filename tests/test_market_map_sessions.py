@@ -40,6 +40,37 @@ class MarketMapSessionTests(unittest.TestCase):
         self.assertFalse(quiet["skew"])
         self.assertTrue(large["skew"])
 
+    def test_rotation_requires_extreme_breadth_and_large_sector_move(self):
+        rotation = _market_move_gate(
+            100e9, 0.05, 0.4, 0.722, -4.25,
+            min_abs=500e9, min_pct=1.0, min_skew=0.7,
+            min_breadth=0.7, min_sector_pct=1.5,
+        )
+        quiet_sector = _market_move_gate(
+            100e9, 0.05, 0.4, 0.722, -0.8,
+            min_abs=500e9, min_pct=1.0, min_skew=0.7,
+            min_breadth=0.7, min_sector_pct=1.5,
+        )
+        self.assertTrue(rotation["rotation"])
+        self.assertTrue(rotation["pass"])
+        self.assertFalse(quiet_sector["rotation"])
+
+    def test_caption_explains_breadth_rotation(self):
+        frame = pd.DataFrame([
+            {"ticker": f"UP{i}", "percent_change": .01, "market_cap": 100.0}
+            for i in range(7)
+        ] + [
+            {"ticker": f"DOWN{i}", "percent_change": -.02, "market_cap": 100.0}
+            for i in range(3)
+        ])
+        sectors = pd.DataFrame([
+            {"sector": "Information Technology", "market_cap_change": -20.0},
+            {"sector": "Health Care", "market_cap_change": 21.0},
+        ])
+        caption = make_caption(frame, 1.0, sectors)
+        self.assertIn("上昇 7（70.0%）／下落 3", caption)
+        self.assertIn("セクターローテーション相場", caption)
+
     def test_pre_close_headline_and_caption(self):
         frame=pd.DataFrame([
             {"ticker":"AAA","percent_change":-.02},

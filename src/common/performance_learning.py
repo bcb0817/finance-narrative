@@ -325,11 +325,11 @@ def update_daily_learning(
     review: dict
     try:
         try:
-            from openai_config import OpenAIRole
-            from openai_service import DailyLimitError, OpenAIService
-        except ImportError:
             from common.openai_config import OpenAIRole
             from common.openai_service import DailyLimitError, OpenAIService
+        except ImportError:
+            from openai_config import OpenAIRole
+            from openai_service import DailyLimitError, OpenAIService
         string_array={"type":"array","items":{"type":"string"}}
         top_item={"type":"object","additionalProperties":False,"properties":{
             "tweet_id":{"type":"string"},"winning_elements":string_array,"hook_pattern":{"type":"string"},

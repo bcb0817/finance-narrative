@@ -50,10 +50,14 @@ def _market_move_gate(
     move: float | None,
     total_pct: float,
     skew: float,
+    breadth_ratio: float = 0.5,
+    max_sector_pct: float = 0.0,
     *,
     min_abs: float,
     min_pct: float,
     min_skew: float,
+    min_breadth: float = 0.7,
+    min_sector_pct: float = 1.5,
     force: bool = False,
 ) -> dict:
     """Evaluate large moves only; scheduled slots never bypass this gate."""
@@ -62,12 +66,18 @@ def _market_move_gate(
     gate_pct = abs(float(total_pct or 0.0)) >= min_pct
     # Concentration alone is noisy on quiet days, so require meaningful size.
     gate_skew = skew >= min_skew and abs_move >= min_abs * 0.5
+    breadth_extreme = (
+        breadth_ratio >= min_breadth
+        or breadth_ratio <= 1.0 - min_breadth
+    )
+    gate_rotation = breadth_extreme and abs(max_sector_pct) >= min_sector_pct
     return {
         "abs": gate_abs,
         "pct": gate_pct,
         "skew": gate_skew,
+        "rotation": gate_rotation,
         "force": force,
-        "pass": gate_abs or gate_pct or gate_skew or force,
+        "pass": gate_abs or gate_pct or gate_skew or gate_rotation or force,
     }
 
 
@@ -91,6 +101,9 @@ def main():
     cap_change = post.get("total_change")  # S&P500時価総額の増減（USD）
     total_pct = post.get("total_pct", 0.0)
     skew = post.get("sector_skew", 0.0)
+    breadth_ratio = post.get("breadth_ratio", 0.5)
+    max_sector_pct = post.get("max_sector_pct", 0.0)
+    max_sector_pct_name = post.get("max_sector_pct_name", "")
     top_sector = post.get("top_sector", "")
     headline = post.get("headline", "")
 
@@ -100,24 +113,33 @@ def main():
     min_abs = _env_float("MARKET_MAP_MIN_ABS_CHANGE_USD", 500e9)
     min_pct = _env_float("MARKET_MAP_MIN_INDEX_PCT", 1.0)
     min_skew = _env_float("MARKET_MAP_SECTOR_SKEW", 0.7)
+    min_breadth = _env_float("MARKET_MAP_MIN_BREADTH_RATIO", 0.7)
+    min_sector_pct = _env_float("MARKET_MAP_MIN_SECTOR_PCT", 1.5)
     gate = _market_move_gate(
         move,
         total_pct,
         skew,
+        breadth_ratio,
+        max_sector_pct,
         min_abs=min_abs,
         min_pct=min_pct,
         min_skew=min_skew,
+        min_breadth=min_breadth,
+        min_sector_pct=min_sector_pct,
         force=_force(),
     )
     gate_abs = gate["abs"]
     gate_pct = gate["pct"]
     gate_skew = gate["skew"]
+    gate_rotation = gate["rotation"]
     gate_pass = gate["pass"]
 
     print(f"[GATE] |Δmcap|=${abs(move or 0)/1e9:.0f}B(>= {min_abs/1e9:.0f}B:{gate_abs}) "
           f"| idx≈{total_pct:+.2f}%(>= {min_pct}%:{gate_pct}) "
           f"| skew={skew:.2f}({top_sector})(>= {min_skew} and "
           f"|move|>={min_abs/2/1e9:.0f}B:{gate_skew}) "
+          f"| breadth={breadth_ratio:.1%}, sector={max_sector_pct:+.2f}%"
+          f"({max_sector_pct_name})(rotation:{gate_rotation}) "
           f"| force={_force()} -> pass={gate_pass}")
 
     if not gate_pass:
@@ -125,7 +147,9 @@ def main():
             market_move=move, market_cap_change=cap_change,
             threshold=(
                 f"abs>={min_abs/1e9:.0f}B or pct>={min_pct}% or "
-                f"(skew>={min_skew} and abs>={min_abs/2/1e9:.0f}B)"
+                f"(skew>={min_skew} and abs>={min_abs/2/1e9:.0f}B) or "
+                f"(breadth>={min_breadth:.0%}/<={1-min_breadth:.0%} and "
+                f"sector>={min_sector_pct}%)"
             ),
             should_post=False, skip_reason="market_gate_not_met",
             post_enabled=_post_enabled(), dry_run=dry_run,
@@ -167,6 +191,9 @@ def main():
                 "market_scope": "market_map",
                 "market_session": session,
                 "large_move_gate": True,
+                "breadth_ratio": breadth_ratio,
+                "max_sector_pct": max_sector_pct,
+                "rotation_detected": gate_rotation,
             },
         )
 
@@ -177,7 +204,9 @@ def main():
         market_move=move, market_cap_change=cap_change,
         threshold=(
             f"abs>={min_abs/1e9:.0f}B or pct>={min_pct}% or "
-            f"(skew>={min_skew} and abs>={min_abs/2/1e9:.0f}B)"
+            f"(skew>={min_skew} and abs>={min_abs/2/1e9:.0f}B) or "
+            f"(breadth>={min_breadth:.0%}/<={1-min_breadth:.0%} and "
+            f"sector>={min_sector_pct}%)"
         ),
         should_post=should_post, skip_reason=skip_reason,
         post_enabled=_post_enabled(), dry_run=dry_run,

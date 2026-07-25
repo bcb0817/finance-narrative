@@ -93,6 +93,18 @@ def make_caption(
     ※ X は1投稿につき cashtag($SYMBOL)を最大1つまで。ティッカーに $ は付けない。
     """
     direction = "消失" if total_change < 0 else "増加"
+    changes = df["percent_change"].dropna()
+    advancers = int((changes > 0).sum())
+    decliner_count = int((changes < 0).sum())
+    breadth_total = advancers + decliner_count
+    breadth_ratio = advancers / breadth_total if breadth_total else 0.5
+    total_mcap = float(df["market_cap"].sum()) if "market_cap" in df else 0.0
+    total_pct = total_change / total_mcap * 100.0 if total_mcap else 0.0
+    rotation = (
+        breadth_total > 0
+        and (breadth_ratio >= 0.7 or breadth_ratio <= 0.3)
+        and abs(total_pct) < 1.0
+    )
 
     # 売り/買いの中心セクター(sector_summary は昇順)
     worst_sector = sector_summary.iloc[0]
@@ -114,7 +126,10 @@ def make_caption(
         "",
         f"売り主導：{_sector_jp(worst_sector['sector'])}（{_signed_jp(worst_sector['market_cap_change'])}）",
         f"買い主導：{_sector_jp(best_sector['sector'])}（{_signed_jp(best_sector['market_cap_change'])}）",
+        f"騰落銘柄：上昇 {advancers}（{breadth_ratio:.1%}）／下落 {decliner_count}",
     ]
+    if rotation:
+        lines += ["", "指数以上に内部差が大きい、セクターローテーション相場。"]
     if mover_lines:
         lines += ["", f"主な下落：{mover_lines}"]
     lines += ["", "#米国株 #SP500"]
