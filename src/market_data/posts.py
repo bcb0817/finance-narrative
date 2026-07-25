@@ -8,6 +8,7 @@ from common.post_registry import record_post
 from common.x_client import post_tweet_with_image
 
 from .models import CrossAssetSignal, MarketMovement
+from .symbols import symbol_config
 
 
 TRUE_VALUES = {"1", "true", "yes"}
@@ -27,6 +28,27 @@ def external_display_approved() -> bool:
 
 def market_post_enabled() -> bool:
     return os.getenv("MARKET_DATA_POST_ENABLED", "false").lower() in TRUE_VALUES
+
+
+def symbol_external_display_allowed(symbol: str) -> bool:
+    try:
+        return bool(symbol_config(symbol).get("external_display_allowed", False))
+    except (KeyError, ValueError):
+        return False
+
+
+def post_type_enabled(movement: MarketMovement) -> bool:
+    if movement.alert_type == "volume_alert":
+        flag = "VOLUME_ALERT_POST_ENABLED"
+    elif movement.asset_type == "equity":
+        flag = "MEGACAP_POST_ENABLED"
+    elif movement.asset_type == "etf":
+        flag = "ETF_POST_ENABLED"
+    elif movement.asset_type == "crypto":
+        flag = "CRYPTO_SIGNAL_POST_ENABLED"
+    else:
+        return False
+    return os.getenv(flag, "false").lower() in TRUE_VALUES
 
 
 def build_market_post(movement: MarketMovement, *, post_type: str | None = None) -> str:
@@ -71,8 +93,12 @@ def publish_market(movement: MarketMovement, image_path: str) -> MarketPostResul
     text = build_market_post(movement)
     if not external_display_approved():
         return MarketPostResult("license_blocked", text, reason="TWELVEDATA_EXTERNAL_DISPLAY_APPROVED=false")
+    if not symbol_external_display_allowed(movement.symbol):
+        return MarketPostResult("symbol_license_blocked", text, reason="external_display_allowed=false")
     if not market_post_enabled():
         return MarketPostResult("disabled", text, reason="MARKET_DATA_POST_ENABLED=false")
+    if not post_type_enabled(movement):
+        return MarketPostResult("type_disabled", text, reason="market-data post type disabled")
     if os.getenv("POST_ENABLED", "false").lower() not in TRUE_VALUES:
         return MarketPostResult("global_disabled", text, reason="POST_ENABLED=false")
     review = review_tweet_with_openai(text, f"{movement.symbol} market movement", "Twelve Data")
