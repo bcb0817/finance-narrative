@@ -84,6 +84,46 @@ def evaluate(now: datetime | None=None) -> list[dict]:
                 "bot":"fx-alert",
                 "detail":f"provider status failed: {type(exc).__name__}",
             })
+    if os.getenv("MARKET_DATA_ENABLED","true").strip().lower() in TRUE_VALUES:
+        if os.getenv("TWELVEDATA_EXTERNAL_DISPLAY_APPROVED","false").strip().lower() not in TRUE_VALUES:
+            alerts.append({
+                "code":"market_data_external_display_not_approved",
+                "severity":"medium",
+                "bot":"market-data",
+                "detail":"Twelve Data values remain local; external display and X posting are blocked",
+            })
+        try:
+            from market_data.provider import provider_status
+            market_provider=provider_status()
+            if not market_provider.get("rest_available"):
+                alerts.append({
+                    "code":"market_data_provider_unavailable",
+                    "severity":"medium",
+                    "bot":"market-data",
+                    "detail":"Twelve Data REST provider is not ready",
+                })
+            usage=market_provider.get("usage",{})
+            ratio=float(usage.get("daily_ratio",0) or 0)
+            soft=float(os.getenv("TWELVEDATA_CREDIT_SOFT_LIMIT_PERCENT","80") or 80)/100
+            hard=float(os.getenv("TWELVEDATA_CREDIT_HARD_LIMIT_PERCENT","95") or 95)/100
+            if ratio >= hard:
+                alerts.append({
+                    "code":"market_data_credit_hard_limit",
+                    "severity":"high","bot":"market-data",
+                    "detail":"Twelve Data hard credit limit reached; API reads are stopped",
+                })
+            elif ratio >= soft:
+                alerts.append({
+                    "code":"market_data_credit_soft_limit",
+                    "severity":"medium","bot":"market-data",
+                    "detail":"Twelve Data soft credit limit reached; low-priority reads are stopped",
+                })
+        except Exception as exc:
+            alerts.append({
+                "code":"market_data_provider_unavailable",
+                "severity":"medium","bot":"market-data",
+                "detail":f"provider status failed: {type(exc).__name__}",
+            })
     return [{**row,"detected_at":now.isoformat()} for row in alerts]
 
 
