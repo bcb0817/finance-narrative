@@ -34,6 +34,18 @@ def get_tweepy_client() -> tweepy.Client:
     )
 
 
+def get_metrics_client() -> tweepy.Client:
+    """Create the read-only client used for public X post metrics.
+
+    Bearer authentication is the appropriate and least-privileged path for
+    public metrics lookup. Posting continues to use the OAuth 1.0a client.
+    """
+    bearer_token = os.getenv("BEARER_TOKEN", "").strip()
+    if not bearer_token:
+        raise RuntimeError("Missing environment variable: BEARER_TOKEN")
+    return tweepy.Client(bearer_token=bearer_token)
+
+
 def get_tweepy_api_v1() -> tweepy.API:
     _required_credentials()
     auth = tweepy.OAuth1UserHandler(
@@ -59,7 +71,7 @@ def post_tweet(text: str) -> str:
     try:
         response = get_tweepy_client().create_tweet(text=text)
         tweet_id = str(response.data["id"])
-        record_post(tweet_id, text=text)
+        record_post(tweet_id, text=text, notify_discord=True)
         logger.info("X post created: %s", tweet_id)
         return tweet_id
     except tweepy.TweepyException:
@@ -77,7 +89,8 @@ def post_tweet_with_image(text: str, image_path: str) -> str:
         media = get_tweepy_api_v1().media_upload(filename=image_path)
         response = get_tweepy_client().create_tweet(text=text, media_ids=[media.media_id])
         tweet_id = str(response.data["id"])
-        record_post(tweet_id, text=text, extra={"has_media": True})
+        record_post(tweet_id, text=text, extra={"has_media": True},
+                    notify_discord=True)
         logger.info("X image post created: %s", tweet_id)
         return tweet_id
     except tweepy.TweepyException:
@@ -111,7 +124,9 @@ def post_tweet_thread_with_image(
     client = get_tweepy_client()
     response = client.create_tweet(text=first_text, media_ids=[media.media_id])
     parent_id = str(response.data["id"])
-    record_post(parent_id, text=first_text, extra={"has_media": True, "thread_parent": True})
+    record_post(parent_id, text=first_text,
+                extra={"has_media": True, "thread_parent": True},
+                notify_discord=True)
     ids = [parent_id]
 
     threads_enabled = os.getenv("THREADS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
@@ -131,7 +146,8 @@ def post_tweet_thread_with_image(
         try:
             result = client.create_tweet(text=reply, in_reply_to_tweet_id=previous_id)
             reply_id = str(result.data["id"])
-            record_post(reply_id, text=reply, extra={"reply_to": previous_id})
+            record_post(reply_id, text=reply, extra={"reply_to": previous_id},
+                        notify_discord=True)
             ids.append(reply_id)
             previous_id = reply_id
         except tweepy.TweepyException as exc:

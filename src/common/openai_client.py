@@ -7,16 +7,16 @@ import os
 import json
 import logging
 
-from openai import OpenAI
-
 try:
     from safety import clean_text
 except ImportError:  # pragma: no cover
     from common.safety import clean_text
 try:
-    from api_costs import ensure_openai_budget, record_openai_usage
+    from openai_config import OpenAIRole, model_for
+    from openai_service import CompatibleClient, OpenAIService
 except ImportError:  # pragma: no cover
-    from common.api_costs import ensure_openai_budget, record_openai_usage
+    from common.openai_config import OpenAIRole, model_for
+    from common.openai_service import CompatibleClient, OpenAIService
 
 logger = logging.getLogger(__name__)
 
@@ -26,51 +26,19 @@ except ImportError:  # pragma: no cover
     from common.performance_learning import with_performance_learning
 
 
-OPENAI_GENERATE_MODEL = os.getenv("OPENAI_GENERATE_MODEL", "gpt-5-mini")
-OPENAI_REVIEW_MODEL = os.getenv("OPENAI_REVIEW_MODEL", "gpt-5-nano")
+OPENAI_GENERATE_MODEL = model_for(OpenAIRole.GENERATE)
+OPENAI_REVIEW_MODEL = model_for(OpenAIRole.REVIEW)
 
 
-class _BudgetedCompletions:
-    def __init__(self, wrapped):
-        self._wrapped = wrapped
-
-    def create(self, *args, **kwargs):
-        ensure_openai_budget()
-        response = self._wrapped.create(*args, **kwargs)
-        record_openai_usage(response, str(kwargs.get("model", "unknown")))
-        return response
-
-
-class _ChatProxy:
-    def __init__(self, wrapped):
-        self.completions = _BudgetedCompletions(wrapped.completions)
-
-
-class _BudgetedOpenAI:
-    def __init__(self, wrapped):
-        self._wrapped = wrapped
-        self.chat = _ChatProxy(wrapped.chat)
-
-    def __getattr__(self, name):
-        return getattr(self._wrapped, name)
-
-
-def get_openai_client() -> OpenAI:
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("環境変数が未設定です: OPENAI_API_KEY")
-    return _BudgetedOpenAI(OpenAI(api_key=os.environ["OPENAI_API_KEY"]))
+def get_openai_client():
+    """後方互換クライアント。既存Chat呼び出しも中央サービスを経由する。"""
+    return CompatibleClient()
 
 
 def generate_by_openai(prompt: str, max_tokens: int = 2000) -> str:
-    client = get_openai_client()
     prompt = with_performance_learning(prompt)
-    response = client.chat.completions.create(
-        model=OPENAI_GENERATE_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_completion_tokens=max_tokens,
-        reasoning_effort="minimal",
-    )
-    text = response.choices[0].message.content or ""
+    text = OpenAIService().text(prompt, role=OpenAIRole.GENERATE,
+                                max_tokens=max_tokens, operation="post_generation", reasoning="low")
     return clean_text(text)
 
 
@@ -80,7 +48,6 @@ def shorten_tweet_with_openai(text: str, max_chars: int = 240) -> str:
     投資助言・売買推奨にしない。失敗時は元テキストを返す（呼び出し側で再チェック）。
     """
     try:
-        client = get_openai_client()
         prompt = (
             f"次のX投稿を、意味と重要な数字を保ったまま日本語で{max_chars}字以内"
             f"（目安180〜{max_chars}字）に短縮してください。\n"
@@ -89,13 +56,8 @@ def shorten_tweet_with_openai(text: str, max_chars: int = 240) -> str:
             "- 改行は最小限、投稿本文のみ返す\n\n"
             f"本文:\n{text}"
         )
-        response = client.chat.completions.create(
-            model=OPENAI_GENERATE_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=2000,
-            reasoning_effort="minimal",
-        )
-        out = clean_text(response.choices[0].message.content or "")
+        out = clean_text(OpenAIService().text(prompt, role=OpenAIRole.GENERATE,
+                                              max_tokens=600, operation="shorten_post", reasoning="low"))
         return out or text
     except Exception as e:
         logger.warning(f"短縮リライト失敗、元テキストを使用: {e}")
@@ -104,8 +66,6 @@ def shorten_tweet_with_openai(text: str, max_chars: int = 240) -> str:
 
 def review_tweet_with_openai(text: str, news_title: str, source: str) -> dict:
     """投稿前にAIで内容をレビューし、投稿可否をJSONで返す"""
-    client = get_openai_client()
-
     review_prompt = f"""あなたは金融SNS投稿のコンプライアンス審査担当です。
 以下のX投稿文を審査し、投稿してよいか判断してください。
 
@@ -137,16 +97,18 @@ def review_tweet_with_openai(text: str, news_title: str, source: str) -> dict:
 
 risk_level は "low" / "medium" / "high" のいずれかにしてください。"""
 
+    schema = {"type":"object","additionalProperties":False,
+              "properties":{"ok_to_post":{"type":"boolean"},"risk_level":{"type":"string","enum":["low","medium","high"]},
+              "reason":{"type":"string"},"contains_investment_advice":{"type":"boolean"},
+              "contains_buy_sell_recommendation":{"type":"boolean"},"contains_unverified_numbers":{"type":"boolean"},
+              "contains_price_prediction":{"type":"boolean"},"too_aggressive":{"type":"boolean"}},
+              "required":["ok_to_post","risk_level","reason","contains_investment_advice","contains_buy_sell_recommendation","contains_unverified_numbers","contains_price_prediction","too_aggressive"]}
     try:
-        response = client.chat.completions.create(
-            model=OPENAI_REVIEW_MODEL,
-            messages=[{"role": "user", "content": review_prompt}],
-            max_completion_tokens=2000,
-            response_format={"type": "json_object"},
-            reasoning_effort="minimal",
-        )
-        raw = response.choices[0].message.content or "{}"
-        result = json.loads(raw)
+        service = OpenAIService()
+        if not service.moderate(text):
+            return {"ok_to_post":False,"risk_level":"high","reason":"moderation_ng"}
+        result = service.structured(review_prompt, schema, role=OpenAIRole.REVIEW,
+                                    operation="financial_safety_review")
         # fail closed: 危険フラグがどれか1つでも立てば投稿不可にする
         danger_keys = (
             "contains_investment_advice", "contains_buy_sell_recommendation",
@@ -157,7 +119,7 @@ risk_level は "low" / "medium" / "high" のいずれかにしてください。
             result["ok_to_post"] = False
         result.setdefault("contains_price_prediction", False)
         return result
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, ValueError) as e:
         logger.error(f"レビュー結果のJSONパース失敗: {e}")
         return {
             "ok_to_post": False,

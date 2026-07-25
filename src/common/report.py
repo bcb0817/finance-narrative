@@ -50,9 +50,9 @@ def fetch_metrics(max_age_days: int = 30) -> list[dict]:
     """
     import tweepy
     try:
-        from x_client import get_tweepy_client
+        from x_client import get_metrics_client
     except ImportError:
-        from common.x_client import get_tweepy_client
+        from common.x_client import get_metrics_client
 
     history = _load(_history_file(), [])
     cached_metrics = _load(_metrics_file(), [])
@@ -100,7 +100,7 @@ def fetch_metrics(max_age_days: int = 30) -> list[dict]:
         logger.info("X metrics refresh is not due; using cached metrics")
         return list(cached_by_id.values())
 
-    client = get_tweepy_client()
+    client = get_metrics_client()
     results: list[dict] = []
 
     # X API v2 は最大100件ずつ取得できる
@@ -109,25 +109,16 @@ def fetch_metrics(max_age_days: int = 30) -> list[dict]:
         ids = [t[0] for t in chunk]
         try:
             resp = client.get_tweets(
-                ids=ids,
-                tweet_fields=["public_metrics", "non_public_metrics", "created_at"],
-            )
+                ids=ids, tweet_fields=["public_metrics", "created_at"])
         except tweepy.TweepyException as e:
-            # non_public_metrics は権限不足だと失敗する → public のみで再試行
-            logger.warning(f"non_public_metrics取得に失敗、public_metricsのみで再試行: {e}")
-            try:
-                resp = client.get_tweets(
-                    ids=ids, tweet_fields=["public_metrics", "created_at"])
-            except tweepy.TweepyException as e2:
-                logger.error(f"実績取得に失敗しました: {e2}")
-                continue
+            logger.error(f"実績取得に失敗しました: {e}")
+            continue
 
         by_id = {t[0]: t[1] for t in chunk}
         for tw in (resp.data or []):
             tid = str(tw.id)
             entry = by_id.get(tid, {})
             pm = getattr(tw, "public_metrics", None) or {}
-            npm = getattr(tw, "non_public_metrics", None) or {}
             previous = cached_by_id.get(tid, {})
             stage = target_stage.get(tid, "24h")
             record = {
@@ -142,11 +133,7 @@ def fetch_metrics(max_age_days: int = 30) -> list[dict]:
                 "market_scope": entry.get("market_scope"),
                 "pass_path": entry.get("pass_path"),
                 # APIプラン/レスポンス差異に備え、non_public → public の順で見る
-                "impressions": (
-                    npm.get("impression_count")
-                    if npm.get("impression_count") is not None
-                    else pm.get("impression_count")
-                ),
+                "impressions": pm.get("impression_count"),
                 "likes": pm.get("like_count", 0),
                 "retweets": pm.get("retweet_count", 0),
                 "replies": pm.get("reply_count", 0),
@@ -175,9 +162,22 @@ def fetch_metrics(max_age_days: int = 30) -> list[dict]:
     return merged
 
 
+def _metric_count(m: dict, key: str) -> int:
+    """Return a safe integer for optional public engagement metrics."""
+    try:
+        return int(m.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _post_title(m: dict, limit: int) -> str:
+    """Return a display label even when a metrics snapshot has no title."""
+    return str(m.get("title") or m.get("text") or "(本文なし)")[:limit]
+
+
 def _engagement(m: dict) -> int:
-    return (m.get("likes", 0) + m.get("retweets", 0)
-            + m.get("replies", 0) + m.get("quotes", 0) + m.get("bookmarks", 0))
+    return sum(_metric_count(m, key) for key in (
+        "likes", "retweets", "replies", "quotes", "bookmarks"))
 
 
 def _fmt(v) -> str:
@@ -214,7 +214,38 @@ def _group_summary(metrics: list[dict], key: str, label: str) -> list[str]:
 
 def build_report(days: int = 1) -> str:
     """直近days日の投稿実績レポートを文字列で返す。"""
-    metrics = fetch_metrics(max_age_days=30)
+    try:
+        from metrics_collector import collect_metrics, load_snapshots, select_stage_snapshot
+        from media_intelligence import build_daily_summary, write_daily_report, generate_shorts_drafts, generate_short_payload_ai
+    except ImportError:
+        from common.metrics_collector import collect_metrics, load_snapshots, select_stage_snapshot
+        from common.media_intelligence import build_daily_summary, write_daily_report, generate_shorts_drafts, generate_short_payload_ai
+    collect_metrics()
+    snapshot_rows = load_snapshots()
+    history_rows = _load(_history_file(), [])
+    history_by_id = {str(p.get("tweet_id")): p for p in history_rows}
+    latest_by_id = {}
+    for snap in snapshot_rows:
+        tid = str(snap.get("tweet_id") or "")
+        if not tid:
+            continue
+        previous = latest_by_id.get(tid)
+        if previous is None or str(snap.get("metrics_collected_at", "")) > str(previous.get("metrics_collected_at", "")):
+            latest_by_id[tid] = snap
+    metrics = []
+    for tid, snap in latest_by_id.items():
+        metrics.append({**history_by_id.get(tid, {}), **snap,
+                        "retweets": snap.get("reposts"),
+                        "fetched_at": snap.get("metrics_collected_at")})
+    if not metrics:
+        metrics = _load(_metrics_file(), [])
+    staged_metrics = []
+    for post in history_rows:
+        matching = [s for s in snapshot_rows if str(s.get("tweet_id")) == str(post.get("tweet_id", ""))
+                    and s.get("stage") == "24h"]
+        snap = max(matching, key=lambda s: str(s.get("metrics_collected_at", ""))) if matching else None
+        if snap:
+            staged_metrics.append({**post, **snap})
     if not metrics:
         return "レポート対象の投稿がありません（まだ実投稿していない可能性があります）。"
 
@@ -245,9 +276,9 @@ def build_report(days: int = 1) -> str:
         imps = [m["impressions"] for m in recent if m.get("impressions") is not None]
         lines.append(f"  合計インプレッション : {_fmt(sum(imps)) if imps else '-'}")
         lines.append(f"  平均インプレッション : {f'{statistics.mean(imps):,.0f}' if imps else '-'}")
-        lines.append(f"  合計いいね           : {sum(m['likes'] for m in recent):,}")
-        lines.append(f"  合計リポスト         : {sum(m['retweets'] for m in recent):,}")
-        lines.append(f"  合計返信             : {sum(m['replies'] for m in recent):,}")
+        lines.append(f"  合計いいね           : {sum(_metric_count(m, 'likes') for m in recent):,}")
+        lines.append(f"  合計リポスト         : {sum(_metric_count(m, 'retweets') for m in recent):,}")
+        lines.append(f"  合計返信             : {sum(_metric_count(m, 'replies') for m in recent):,}")
     else:
         lines.append("  投稿なし")
     lines.append("")
@@ -263,9 +294,10 @@ def build_report(days: int = 1) -> str:
     for i, m in enumerate(ranked[:5], 1):
         lines.append(
             f"  {i}. imp={_fmt(m.get('impressions')):>9s} "
-            f"♡{m['likes']:<3d} RT{m['retweets']:<3d} 返信{m['replies']:<3d}"
+            f"♡{_metric_count(m, 'likes'):<3d} RT{_metric_count(m, 'retweets'):<3d} "
+            f"返信{_metric_count(m, 'replies'):<3d}"
         )
-        lines.append(f"     {m['title'][:60]}")
+        lines.append(f"     {_post_title(m, 60)}")
         lines.append(
             f"     scope={m.get('market_scope','-')} / post_value={m.get('post_value','-')} "
             f"/ 経路={m.get('pass_path','-')}"
@@ -277,7 +309,7 @@ def build_report(days: int = 1) -> str:
     for i, m in enumerate(ranked[-3:][::-1], 1):
         lines.append(
             f"  {i}. imp={_fmt(m.get('impressions')):>9s} "
-            f"♡{m['likes']:<3d} RT{m['retweets']:<3d}  {m['title'][:50]}"
+            f"♡{_metric_count(m, 'likes'):<3d} RT{_metric_count(m, 'retweets'):<3d}  {_post_title(m, 50)}"
         )
     lines.append("")
 
@@ -342,7 +374,7 @@ def build_report(days: int = 1) -> str:
         lookback = int(__import__("os").environ.get(
             "PERFORMANCE_LEARNING_LOOKBACK_HOURS", "24") or 24)
         learning = update_daily_learning(
-            metrics, lookback_hours=lookback, top_n=top_n)
+            staged_metrics or metrics, lookback_hours=lookback, top_n=top_n)
         lines.append("■ 日次学習")
         lines.append(f"  status={learning.get('status', '-')}")
         lines.append(f"  {learning.get('message') or learning.get('reason') or '-'}")
@@ -364,4 +396,12 @@ def build_report(days: int = 1) -> str:
         log_run({"bot": "report", "posts_analyzed": len(metrics), "recent": len(recent)})
     except Exception:
         pass
+    try:
+        posts = _load(_history_file(), [])
+        summary = build_daily_summary(posts, load_snapshots())
+        write_daily_report(summary)
+        generate_shorts_drafts(summary["stages"]["24h"]["top"], summary["date"],
+                               generator=generate_short_payload_ai)
+    except Exception:
+        logger.exception("メディア再利用成果物の生成に失敗（レポートは維持）")
     return report

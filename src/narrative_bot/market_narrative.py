@@ -146,8 +146,10 @@ def _build_prompt(signals: dict) -> str:
 - 投資助言・推奨に見える表現がある
 - 市場への影響が弱い、または局所的（個別株・地方・ニッチ）
 - 出所不明の材料を中心に組み立てている
-各項目の文字数目安（超過しない）：what 80〜120字 / why 80〜120字 /
+各項目の文字数目安：what 80〜120字 / why 80〜120字 /
 market_effect 60〜100字 / watch_points は3点以内。
+文字数より文章の完結を優先すること。130字を超えても構わないので、文末まで書き切る。
+「…」「...」による省略や、助詞・読点・名詞の途中で終わる未完の文章は禁止。
 投稿数より質を優先し、迷ったら低めに採点すること。"""
 
 
@@ -215,9 +217,9 @@ def select_top_narrative(candidates: list[dict]) -> tuple[dict | None, list[dict
     return top, rejected
 
 
-def _clip(s: str, n: int) -> str:
-    s = (s or "").strip()
-    return s if len(s) <= n else s[: n - 1] + "…"
+def _clean_text(s: str) -> str:
+    """投稿素材を整形する。内容は失わず、長さ調整は投稿時のスレッド分割に任せる。"""
+    return " ".join(str(s or "").split()).strip()
 
 
 def _normalize_candidate(c: dict) -> dict:
@@ -231,12 +233,12 @@ def _normalize_candidate(c: dict) -> dict:
         c["post_value"] = int(c.get("post_value", 0))
     except Exception:
         c["post_value"] = 0
-    c["what"] = _clip(c.get("what", ""), 120)
-    c["why"] = _clip(c.get("why", ""), 120)
-    c["market_effect"] = _clip(c.get("market_effect", ""), 100)
-    c["conclusion"] = _clip(c.get("conclusion", "") or c.get("title", ""), 60)
+    c["what"] = _clean_text(c.get("what", ""))
+    c["why"] = _clean_text(c.get("why", ""))
+    c["market_effect"] = _clean_text(c.get("market_effect", ""))
+    c["conclusion"] = _clean_text(c.get("conclusion", "") or c.get("title", ""))
     wp = c.get("watch_points", []) or []
-    c["watch_points"] = [_clip(w, 40) for w in wp[:3]]
+    c["watch_points"] = [_clean_text(w) for w in wp[:3] if _clean_text(w)]
     c["tickers"] = (c.get("tickers", []) or [])[:6]
     c["source_titles"] = c.get("source_titles", []) or []
     return c
@@ -249,46 +251,25 @@ def build_caption(top: dict) -> str:
         何が起きた：…
         なぜ重要：…
         見るべき点：…
-    X重み付き文字数(<=270)に収まるよう各セクションを切り詰める。
+    文を途中で切らず全文を返す。Xの上限を超える場合は投稿処理側が
+    文・節の境界でスレッドに分割する。
     """
-    try:
-        from safety import weighted_len
-    except Exception:
-        def weighted_len(s):  # フォールバック（CJK=2近似）
-            return sum(1 if ord(c) < 0x1100 else 2 for c in s or "")
-
-    conclusion = (top.get("conclusion") or top.get("title") or "").strip()
-    what = (top.get("what") or "").strip()
-    why = (top.get("why") or "").strip()
+    conclusion = _clean_text(top.get("conclusion") or top.get("title") or "")
+    what = _clean_text(top.get("what") or "")
+    why = _clean_text(top.get("why") or "")
     wps = top.get("watch_points") or []
-    watch = (wps[0] if wps else (top.get("market_effect") or "")).strip()
+    watch = _clean_text(wps[0] if wps else (top.get("market_effect") or ""))
 
-    def line(label, text, budget):
-        text = _clip(text, budget)
+    def line(label, text):
         return f"{label}{text}" if text else ""
 
-    # 初期予算（必要なら全体で詰める）
     parts = [
-        line("結論：", conclusion, 50),
-        line("何が起きた：", what, 60),
-        line("なぜ重要：", why, 60),
-        line("見るべき点：", watch, 50),
+        line("結論：", conclusion),
+        line("何が起きた：", what),
+        line("なぜ重要：", why),
+        line("見るべき点：", watch),
     ]
-    caption = "\n".join(p for p in parts if p)
-
-    # X重み付き270を超えるなら、後ろのセクションから削って収める
-    cap_budget = 270
-    while weighted_len(caption) > cap_budget and len(parts) > 1:
-        # 末尾の非空セクションを1つ落とす
-        for i in range(len(parts) - 1, 0, -1):
-            if parts[i]:
-                parts[i] = ""
-                break
-        caption = "\n".join(p for p in parts if p)
-    # それでも長い場合は結論だけにして丸める
-    if weighted_len(caption) > cap_budget:
-        caption = _clip(f"結論：{conclusion}", 120)
-    return caption
+    return "\n".join(p for p in parts if p)
 
 
 def analyze_market(signals: dict | None = None) -> dict:

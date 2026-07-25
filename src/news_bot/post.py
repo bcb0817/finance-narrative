@@ -19,6 +19,7 @@ import tweepy  # noqa: F401  （post_tweet 等の例外型互換のため残す�
 from safety import (
     MAX_POST_LENGTH, JST, NG_WORDS, PROMPT_SAFETY_RULES,
     is_night_time_jst, clean_text, safety_check,
+    normalize_generated_post_text, generated_post_quality_error,
     NEWS_BOT_POST_VALUE_THRESHOLD, format_decision_log,
 )
 from openai_client import (
@@ -29,6 +30,11 @@ from openai_client import (
 from x_client import (
     get_tweepy_client, get_tweepy_api_v1, post_tweet, post_tweet_with_image,
 )
+from post_registry import hours_since_last_post, posting_inactive
+from openai_config import OpenAIRole, model_for
+from openai_service import semantic_duplicate
+from post_style import choose_style, enforce_hashtag_limit, generation_rules
+from dynamic_posting import posting_window
 
 # --- news_bot 内のモジュール ---
 from news import fetch_news, NewsItem
@@ -160,7 +166,8 @@ def needs_background_context(item: NewsItem) -> tuple[bool, str]:
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
-            model=OPENAI_REVIEW_MODEL,
+            model=model_for(OpenAIRole.CLASSIFY),
+            openai_role="classify",
             messages=[{"role": "user", "content": judge_prompt}],
             max_completion_tokens=2000,
             response_format={"type": "json_object"},
@@ -284,6 +291,11 @@ def _choose_prompt(item: NewsItem, *, with_link: bool = False, diagram: bool = F
         f"needs_background_context={str(needs).lower()} / "
         f"background_reason={reason!r} / selected_prompt_type={prompt_type}"
     )
+    try:
+        from common.teacher_data import prompt_context
+        prompt += prompt_context(item.title)
+    except Exception as exc:
+        logger.warning("teacher context unavailable; generation continues: %s", type(exc).__name__)
     return prompt
 
 
@@ -303,7 +315,7 @@ def generate_tweet_diagram(item: NewsItem) -> str:
     return generate_by_openai(prompt, max_tokens=4000)
 
 
-def create_tweet(mode: str, item: NewsItem) -> str:
+def create_tweet(mode: str, item: NewsItem, *, style: str = "breaking_news") -> str:
     if mode == "link":
         logger.info("リンクあり投稿を生成中...")
         return generate_tweet_with_link(item)
@@ -311,7 +323,8 @@ def create_tweet(mode: str, item: NewsItem) -> str:
         logger.info("図解形式の投稿を生成中...")
         return generate_tweet_diagram(item)
     logger.info("リンクなし投稿を生成中...")
-    return generate_tweet_without_link(item)
+    prompt = _choose_prompt(item, with_link=False) + "\n\n【今回の編集ルール】\n" + generation_rules(style)
+    return enforce_hashtag_limit(generate_by_openai(prompt, max_tokens=2000))
 
 
 def _news_log(
@@ -374,8 +387,12 @@ def ensure_postable(text: str, *, max_chars: int = 240) -> tuple[bool, str, str,
       - 長すぎ  → 短縮を試し、OKなら ok=True/"ok_after_shorten"/shortened=True
                  だめなら ok=False/"too_long_after_shorten:<n>" など
     """
-    if not text or not text.strip():
+    text = normalize_generated_post_text(text)
+    if not text:
         return False, text, "empty", False
+    quality_error = generated_post_quality_error(text)
+    if quality_error:
+        return False, text, f"malformed:{quality_error}", False
     for w in NG_WORDS:
         if w in text:
             return False, text, f"ng_word:{w}", False
@@ -384,13 +401,18 @@ def ensure_postable(text: str, *, max_chars: int = 240) -> tuple[bool, str, str,
 
     # 280字超 → 180〜240字に短縮リライト
     logger.info(f"本文が長いため短縮リライトを試行: {len(text)}字 → 目安{max_chars}字以内")
-    shortened_text = shorten_tweet_with_openai(text, max_chars=max_chars)
+    shortened_text = normalize_generated_post_text(
+        shorten_tweet_with_openai(text, max_chars=max_chars)
+    )
     shortened = True
     if not shortened_text or not shortened_text.strip():
         return False, text, "empty_after_shorten", shortened
     for w in NG_WORDS:
         if w in shortened_text:
             return False, shortened_text, f"ng_word_after_shorten:{w}", shortened
+    quality_error = generated_post_quality_error(shortened_text)
+    if quality_error:
+        return False, shortened_text, f"malformed_after_shorten:{quality_error}", shortened
     if len(shortened_text) > MAX_POST_LENGTH:
         return False, shortened_text, f"too_long_after_shorten:{len(shortened_text)}", shortened
     return True, shortened_text, "ok_after_shorten", shortened
@@ -513,6 +535,20 @@ NEWS_BOT_NARRATIVE_THRESHOLD = _env_int("NEWS_NARRATIVE_THRESHOLD", 7)
 NEWS_BOT_THEME_THRESHOLD = _env_int("NEWS_THEME_THRESHOLD", 6)
 # safety.py の既定(7)を .env で上書き（既定6=緩め）
 NEWS_BOT_POST_VALUE_THRESHOLD = _env_int("NEWS_POST_VALUE_THRESHOLD", 6)
+NEWS_IDLE_FALLBACK_HOURS = max(0, _env_int("NEWS_IDLE_FALLBACK_HOURS", 3))
+
+
+def idle_fallback_allowed(impact: dict, title: str) -> bool:
+    """3時間無投稿でも最低品質と話題性／一次情報重要度を満たす場合だけ許可。"""
+    return (
+        int(impact.get("post_value", 0)) >= 6
+        and int(impact.get("us_equity_relevance", 0)) >= 5
+        and bool(impact.get("has_independent_angle", False))
+        and (float(impact.get("x_topic_acceleration", 0) or 0)
+             >= float(os.getenv("X_TOPIC_ACCELERATION_MINIMUM", "1.25") or 1.25)
+             or int(impact.get("primary_source_importance", 0)) >= 9)
+        and not _is_roundup_title(title)
+    )
 
 
 def assess_market_impact(item: NewsItem) -> dict:
@@ -581,13 +617,17 @@ EIAで投稿可は「原油/ガソリン/天然ガス在庫・WTI/Brent需給・
   "narrative_value": 1〜10の整数,
   "theme_relevance": 1〜10の整数,
   "market_scope": "上記のいずれか",
+  "post_type": "breaking_news / misconception / second_order_effect / comparison / scheduled_summary のいずれか",
+  "has_independent_angle": true または false,
+  "primary_source_importance": 1〜10の整数,
   "reason": "日本語1文で理由",
   "skip_reason": "スキップする場合の理由（投稿可なら空文字）"
 }}"""
     try:
         client = get_openai_client()
         resp = client.chat.completions.create(
-            model=OPENAI_REVIEW_MODEL,
+            model=model_for(OpenAIRole.CLASSIFY),
+            openai_role="classify",
             messages=[{"role": "user", "content": prompt}],
             max_completion_tokens=2000,
             response_format={"type": "json_object"},
@@ -606,6 +646,9 @@ EIAで投稿可は「原油/ガソリン/天然ガス在庫・WTI/Brent需給・
         narr = _i("narrative_value")
         theme = _i("theme_relevance")
         scope = str(data.get("market_scope", "none"))
+        data["post_type"] = str(data.get("post_type", "breaking_news"))
+        data["has_independent_angle"] = bool(data.get("has_independent_angle", False))
+        data["primary_source_importance"] = _i("primary_source_importance")
 
         # #6 通常Botの投稿条件:
         # post_value>=7 かつ (直接関連度>=8 or 話題性+テーマ or ナラティブ+テーマ)
@@ -676,6 +719,13 @@ def main(mode: str = "image") -> None:
     pv = rel = buzz = narr = theme = 0
     scope = "-"
     checked_count = 0
+    fallback = None
+
+    try:
+        from xai_radar import load_cache
+        radar_topics = load_cache()
+    except Exception:
+        radar_topics = []
 
     for rank, cand in enumerate(candidates, start=1):
         checked_count += 1
@@ -704,6 +754,41 @@ def main(mode: str = "image") -> None:
         cand_theme = cand_impact.get("theme_relevance", 0)
         cand_scope = cand_impact.get("market_scope", "-")
         cand_should = cand_impact.get("should_post", False)
+
+        title_lower=cand.title.lower()
+        matched=next((topic for topic in radar_topics if str(topic.get("topic","")).lower() in title_lower or any(str(t).lower() in title_lower for t in topic.get("tickers",[]))),None)
+        cand_impact["x_topic_velocity"] = float((matched or {}).get("velocity_60m",0) or 0)
+        cand_impact["x_topic_acceleration"] = float((matched or {}).get("acceleration_score",0) or 0)
+        cand_impact["news_confirmation_status"] = "confirmed" if matched else "not_radar_sourced"
+        cand_impact["radar_influenced"] = bool(matched)
+        cand_impact["xai_signal_used"] = bool(matched)
+        cand_impact["xai_signal_reason"] = "topic_or_ticker_match" if matched else "no_match"
+        cand_impact["radar_run_id"] = (matched or {}).get("radar_run_id")
+        cand_impact["radar_topic"] = (matched or {}).get("topic")
+        cand_impact["xai_cost_attribution_usd"] = (matched or {}).get("xai_cost_attribution_usd",0)
+        cand_impact["observed_velocity_score"] = (matched or {}).get("velocity_score")
+        cand_impact["observed_acceleration_score"] = (matched or {}).get("acceleration_score")
+        cand_impact["source_confirmation"] = (matched or {}).get("source_confirmation")
+
+        try:
+            duplicate = semantic_duplicate(cand.title, title=cand.title, source_url=cand.url)
+        except Exception as exc:
+            logger.warning("意味的重複判定に失敗したため安全側で候補を保留: %s", type(exc).__name__)
+            record_evaluated(cand.url, cand.title, skip_reason="embedding_unavailable", should_post=False)
+            continue
+        if duplicate["status"] == "block":
+            logger.info("意味的重複のため候補除外: similarity=%.3f", duplicate["similarity"])
+            record_evaluated(cand.url, cand.title, skip_reason="semantic_duplicate", should_post=False)
+            continue
+        if duplicate["status"] == "warn":
+            logger.warning("類似投稿警告（別論点として審査継続）: similarity=%.3f", duplicate["similarity"])
+
+        # 通常ゲートを落ちた候補も、長時間無投稿時に備えて最良1件だけ保持する。
+        # AI評価そのものが失敗した候補は、品質を判断できないため対象外。
+        if (not cand_should and cand_impact.get("skip_reason") != "assess_failed"):
+            fallback_score = (cand_pv, max(cand_rel, cand_buzz, cand_narr), cand_theme)
+            if fallback is None or fallback_score > fallback[0]:
+                fallback = (fallback_score, cand, cand_impact, rank)
 
         if not cand_should:
             skip_reason = cand_impact.get("skip_reason") or "low_value"
@@ -742,6 +827,31 @@ def main(mode: str = "image") -> None:
         )
         break
 
+    if item is None and fallback is not None and posting_inactive(NEWS_IDLE_FALLBACK_HOURS):
+        _, fallback_item, fallback_impact, rank = fallback
+        fallback_ok = idle_fallback_allowed(fallback_impact, fallback_item.title)
+        if fallback_ok:
+            item, impact = fallback_item, fallback_impact
+        else:
+            logger.info("3時間フォールバック最低条件未達のため正常スキップ")
+    if item is not None and impact is not None and not impact.get("should_post",False):
+        impact = {**impact, "should_post": True, "skip_reason": "",
+                  "pass_path": "idle_fallback"}
+        pv = impact.get("post_value", 0)
+        rel = impact.get("us_equity_relevance", 0)
+        buzz = impact.get("social_buzz_score", 0)
+        narr = impact.get("narrative_value", 0)
+        theme = impact.get("theme_relevance", 0)
+        scope = impact.get("market_scope", "-")
+        elapsed = hours_since_last_post()
+        record_evaluated(item.url, item.title, skip_reason="", should_post=True)
+        logger.warning(
+            "無投稿フォールバックを適用: elapsed_hours=%s / threshold=%s / "
+            "rank=%s / post_value=%s / title=%s",
+            "history_none" if elapsed is None else f"{elapsed:.2f}",
+            NEWS_IDLE_FALLBACK_HOURS, rank, pv, item.title,
+        )
+
     if item is None or impact is None:
         logger.info(
             f"候補{checked_count}件を確認したが、投稿基準を通るニュースなし"
@@ -775,9 +885,24 @@ def main(mode: str = "image") -> None:
     if DRY_RUN:
         logger.info("[INFO] should_post=true だが POST_ENABLED=false のため dry-run（未投稿）")
 
+    window=posting_window(float(impact.get("x_topic_acceleration",0) or 0))
+    if not window["allow"]:
+        _gate_log(should_post=False,skip_reason=f"dynamic_gap:{window['required_gap_minutes']}min",dry_run=DRY_RUN,actual_post_attempted=False)
+        logger.info("動的投稿間隔により正常スキップ: %s",window)
+        return
+
+    try:
+        from post_registry import _load_history
+        recent_styles=[r.get("post_type","") for r in _load_history()[-5:]]
+    except Exception: recent_styles=[]
+    selected_style=choose_style(suggested=impact.get("post_type",""),recent_styles=recent_styles)
+    impact.update({"post_type":selected_style,"experiment_variant":selected_style,
+                   "experiment_hypothesis":"投稿タイプ別に話題速度補正後の24h実績を比較",
+                   "source_type":getattr(item,"source_group","market_news"),"opinion_strength":"moderate"})
+
     if mode in ("image", "diagram"):
         diagram_judgement = assess_diagram_value(
-            item, get_openai_client(), OPENAI_REVIEW_MODEL,
+            item, get_openai_client(), model_for(OpenAIRole.CLASSIFY),
         )
         logger.info(
             "図解価値=%s/10 / clear=%s / structure=%s / facts=%s / numeric=%s / "
@@ -793,12 +918,22 @@ def main(mode: str = "image") -> None:
         if not diagram_judgement.get("should_diagram", False):
             logger.info("図解価値が基準未達のため、通常文章へ自動変更")
             mode = "normal"
+        else:
+            # Explicit `diagram` and automatic `image` use the same PNG
+            # generation/upload path after the value gate passes.
+            mode = "image"
+            impact.update({
+                "diagram_value_score": diagram_judgement.get("score"),
+                "diagram_structure_type": diagram_judgement.get("structure_type"),
+                "diagram_reason": diagram_judgement.get("reason"),
+                "diagram_png_attached": True,
+            })
 
     if mode == "image":
         handle_image_post(item, impact=impact)
         return
 
-    tweet = create_tweet(mode, item)
+    tweet = create_tweet(mode, item, style=selected_style)
 
     # 文字数オーバーは即スキップせず短縮を試す。NG/空はスキップ。
     ok, tweet, safety_result, shortened = ensure_postable(tweet, max_chars=240)

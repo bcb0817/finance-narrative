@@ -25,9 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 def _enabled() -> bool:
-    return os.environ.get(
-        "PERFORMANCE_LEARNING_ENABLED", "true"
-    ).strip().lower() in ("true", "1", "yes")
+    flags = (
+        os.environ.get("PERFORMANCE_LEARNING_ENABLED", "true"),
+        os.environ.get("DAILY_LEARNING_ENABLED", "true"),
+        os.environ.get("PERFORMANCE_PATTERNS_ENABLED", "true"),
+    )
+    return all(flag.strip().lower() in ("true", "1", "yes") for flag in flags)
 
 
 def _root() -> Path:
@@ -46,8 +49,16 @@ def _daily_jsonl() -> Path:
     return _root() / "daily_top3.jsonl"
 
 
+def _daily_bottom_jsonl() -> Path:
+    return _root() / "daily_bottom3.jsonl"
+
+
 def _latest_md() -> Path:
     return _root() / "latest_patterns.md"
+
+
+def _latest_avoid_md() -> Path:
+    return _root() / "latest_avoid_patterns.md"
 
 
 def _engagement(m: dict) -> int:
@@ -86,6 +97,8 @@ def _json_from_model(raw: str) -> dict:
     text = (raw or "").strip()
     if text.startswith("```"):
         text = text.replace("```json", "", 1).replace("```", "").strip()
+    if not text.startswith("{") and "{" in text and "}" in text:
+        text = text[text.find("{"):text.rfind("}") + 1]
     data = json.loads(text or "{}")
     return data if isinstance(data, dict) else {}
 
@@ -110,6 +123,17 @@ def _replace_daily_jsonl(record: dict) -> None:
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
         encoding="utf-8",
     )
+
+
+def _write_daily_jsonl(path: Path, record: dict) -> None:
+    rows = []
+    if path.exists():
+        try:
+            rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+                    if line.strip() and json.loads(line).get("date") != record.get("date")]
+        except (OSError, json.JSONDecodeError): rows = []
+    rows.append(record)
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows[-90:]), encoding="utf-8")
 
 
 def _render_latest_markdown(review: dict, run_date: str) -> str:
@@ -174,12 +198,16 @@ def update_daily_learning(
 
     now = datetime.now(JST)
     cutoff = now - timedelta(hours=max(1, int(lookback_hours)))
+    min_age_hours = max(0.0, float(os.environ.get("DAILY_MIN_POST_AGE_HOURS", "6")))
     candidates: list[dict] = []
 
     for metric in metrics:
         posted = _parse_dt(metric.get("posted_at", ""))
+        measured = _parse_dt(metric.get("metrics_collected_at", ""))
         impressions = metric.get("impressions")
-        if posted is None or posted < cutoff or impressions is None:
+        # 24h評価は投稿時刻ではなく計測完了時刻で当日分を選ぶ。
+        reference = measured if metric.get("stage") == "24h" and measured else posted
+        if posted is None or reference is None or reference < cutoff or impressions is None:
             continue
         try:
             impressions = int(impressions)
@@ -187,6 +215,8 @@ def update_daily_learning(
             continue
 
         age_hours = max((now - posted).total_seconds() / 3600.0, 0.1)
+        if age_hours < min_age_hours:
+            continue
         row = dict(metric)
         row["impressions"] = impressions
         row["age_hours"] = round(age_hours, 2)
@@ -199,6 +229,7 @@ def update_daily_learning(
         reverse=True,
     )
     top = candidates[: max(1, int(top_n))]
+    bottom = list(reversed(candidates[-max(1, int(os.getenv("DAILY_BOTTOM_COUNT", "3"))):]))
     run_date = now.strftime("%Y-%m-%d")
 
     if not top:
@@ -264,6 +295,9 @@ def update_daily_learning(
 【直近24時間の上位投稿】
 {chr(10).join(prompt_rows)}
 
+【直近24時間の下位投稿】
+{chr(10).join(json.dumps({k: m.get(k) for k in ('tweet_id','text','title','impressions','impressions_per_hour','posted_at','mode')}, ensure_ascii=False) for m in bottom)}
+
 次のJSONだけを返してください。Markdownや説明文は禁止です。
 {{
   "daily_summary": "今日の勝ち筋を日本語2〜4文で",
@@ -291,21 +325,39 @@ def update_daily_learning(
     review: dict
     try:
         try:
-            from openai_client import get_openai_client, OPENAI_GENERATE_MODEL
+            from common.openai_config import OpenAIRole
+            from common.openai_service import DailyLimitError, OpenAIService
         except ImportError:
-            from common.openai_client import get_openai_client, OPENAI_GENERATE_MODEL
-
-        client = get_openai_client()
-        response = client.chat.completions.create(
-            model=OPENAI_GENERATE_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=3000,
-            response_format={"type": "json_object"},
-            reasoning_effort="minimal",
-        )
-        review = _json_from_model(response.choices[0].message.content or "{}")
+            from openai_config import OpenAIRole
+            from openai_service import DailyLimitError, OpenAIService
+        string_array={"type":"array","items":{"type":"string"}}
+        top_item={"type":"object","additionalProperties":False,"properties":{
+            "tweet_id":{"type":"string"},"winning_elements":string_array,"hook_pattern":{"type":"string"},
+            "structure_pattern":{"type":"string"},"visual_or_format_signal":{"type":"string"},"caveat":{"type":"string"}},
+            "required":["tweet_id","winning_elements","hook_pattern","structure_pattern","visual_or_format_signal","caveat"]}
+        rule_item={"type":"object","additionalProperties":False,"properties":{"rule":{"type":"string"},"evidence":{"type":"string"}},"required":["rule","evidence"]}
+        avoid_item={"type":"object","additionalProperties":False,"properties":{"rule":{"type":"string"},"reason":{"type":"string"}},"required":["rule","reason"]}
+        schema={"type":"object","additionalProperties":False,"properties":{"daily_summary":{"type":"string"},
+            "top_posts":{"type":"array","items":top_item},"reusable_rules":{"type":"array","items":rule_item},
+            "rolling_rules":{"type":"array","items":rule_item},"avoid_patterns":{"type":"array","items":avoid_item}},
+            "required":["daily_summary","top_posts","reusable_rules","rolling_rules","avoid_patterns"]}
+        review = OpenAIService().structured(prompt, schema, role=OpenAIRole.ANALYZE,
+                                            operation="daily_performance_analysis")
         status = "ok"
         error = ""
+        skip_reason = ""
+    except DailyLimitError:
+        logger.info("日次Top3レビューをスキップ: analyze daily limit reached")
+        review = {
+            "daily_summary": "",
+            "top_posts": [],
+            "reusable_rules": [],
+            "rolling_rules": [],
+            "avoid_patterns": [],
+        }
+        status = "skipped"
+        error = ""
+        skip_reason = "analyze_daily_limit_reached"
     except Exception as e:  # 学習失敗で日次レポート全体を止めない
         logger.exception("日次Top3レビューに失敗しました")
         review = {
@@ -317,6 +369,7 @@ def update_daily_learning(
         }
         status = "analysis_error"
         error = f"{type(e).__name__}: {e}"
+        skip_reason = ""
 
     payload = {
         "status": status,
@@ -325,8 +378,10 @@ def update_daily_learning(
         "lookback_hours": lookback_hours,
         "ranking": "impressions_desc",
         "top_posts": raw_top,
+        "bottom_posts": bottom,
         "review": review,
         "error": error,
+        "reason": skip_reason,
     }
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     payload["content_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
@@ -335,13 +390,24 @@ def update_daily_learning(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    (_reviews_dir() / f"{run_date}.md").write_text(
+        f"# 日次投稿レビュー {run_date}\n\n## 総括\n{review.get('daily_summary') or 'データ不足'}\n\n"
+        + "## 上位投稿\n" + "\n".join(f"- {p.get('text') or p.get('title')}" for p in raw_top)
+        + "\n\n## 下位投稿\n" + "\n".join(f"- {p.get('text') or p.get('title')}" for p in bottom) + "\n",
+        encoding="utf-8")
     _replace_daily_jsonl(payload)
+    _write_daily_jsonl(_daily_bottom_jsonl(), {"date": run_date, "posts": bottom})
 
     if status == "ok":
         _latest_md().write_text(
             _render_latest_markdown(review, run_date),
             encoding="utf-8",
         )
+        avoid = review.get("avoid_patterns") or []
+        _latest_avoid_md().write_text(
+            "# 最新の避けるパターン\n\n" + "\n".join(
+                f"- {i.get('rule') or i.get('pattern')}" if isinstance(i, dict) else f"- {i}" for i in avoid
+            ) + "\n", encoding="utf-8")
 
     try:
         log_run({
@@ -361,7 +427,11 @@ def update_daily_learning(
         "message": (
             f"インプレッション上位{len(raw_top)}件を学習データに保存しました"
             if status == "ok"
-            else f"上位{len(raw_top)}件は保存しましたが、AIレビューに失敗しました: {error}"
+            else (
+                f"上位{len(raw_top)}件を保存し、AIレビューは日次上限のため正常スキップしました"
+                if status == "skipped"
+                else f"上位{len(raw_top)}件は保存しましたが、AIレビューに失敗しました: {error}"
+            )
         ),
     }
 
@@ -375,6 +445,8 @@ def load_learning_context(max_chars: int | None = None) -> str:
         return ""
     try:
         text = path.read_text(encoding="utf-8").strip()
+        avoid = _latest_avoid_md()
+        if avoid.exists(): text += "\n\n" + avoid.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
     try:

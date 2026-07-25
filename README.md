@@ -8,9 +8,11 @@
 | Bot | 内容 | 既定スケジュール |
 |---|---|---|
 | news | ニュース図解/要約投稿 | 30分間隔（`config/schedule.json`） |
-| narrative | 市場ナラティブ | 米国営業日 08:30 / 09:35 / 16:05 ET |
-| market-map | 寄り直後ヒートマップ | 米国営業日 09:35 ET |
+| narrative | 米国株の注目材料 | 米国営業日 08:30 / 09:35 / 16:05 ET |
+| market-map | 大幅変動時だけヒートマップ（判定） | 米国営業日 09:35 / 15:50 ET |
 | weekly | 週間注目イベント | 毎週日曜 21:00 JST |
+
+market-mapは定時刻に必ず投稿するのではなく、時価総額・指数・セクター集中・市場内部の大きな変化が基準を超えた場合だけ投稿します。引け前は、S&P500が前日終値をまたいで0.75ポイント以上反転した場合も大幅変動として扱います。
 
 ## Windows クイックスタート（ダブルクリックだけで使う）
 
@@ -189,6 +191,7 @@ FONT_PATH=C:/Windows/Fonts/YuGothM.ttc
 
 - 投資助言・売買推奨は禁止（NGワード + OpenAIレビューの二重ゲート、fail closed）
 - 未確認の数字・事実の捏造は禁止。市場データ取得失敗時は推測で埋めずスキップ
+- 通常投稿は簡潔さを維持し、詳しい解説が必要な複雑事象に限って130文字超を許可。背景・因果・市場の注目点を省略せず、文章の完結を優先
 - 投稿価値ゲート: news は post_value>=7 かつ 関連度/話題性ゲート、narrative は post_value>=8
 - 履歴は**投稿成功後だけ**保存。失敗・POST_ENABLED=false では保存しない
 
@@ -197,3 +200,53 @@ FONT_PATH=C:/Windows/Fonts/YuGothM.ttc
 `config/bot_persona.md` / `config/finance_tone.md` /
 `knowledge/viral_patterns/` / `knowledge/failed_patterns/` /
 `knowledge/source_notes/` / `knowledge/ticker_notes/`
+# Growth operations additions
+
+The bot keeps its existing safety and posting pipeline while adding controlled growth experiments.
+
+- xAI Radar runs at six priority windows in JST: `00:00`, `06:00`, `08:00`, `17:00`, `21:00`, and `22:30`.
+- Radar is enabled only when the feature flags, schedule, API key, budget, and daily limit all permit it.
+- xAI counts are observed samples returned by the search, not complete totals for all of X. New fields use the `observed_` prefix; legacy aliases remain readable.
+- Post styles are tracked as `breaking_news`, `misconception`, `second_order_effect`, `comparison`, and `scheduled_summary`.
+- No more than three experiments are active. Results prioritize available growth KPIs and never convert unavailable metrics to zero.
+- Metrics collection windows are 45–90 minutes, 330–420 minutes, and 1380–1620 minutes. Expired stages are recorded as `missed`; later values are never backfilled.
+- OpenAI Batch is limited to delayed historical analysis and is never used for realtime generation, duplicate checks, or safety review.
+- Quote-post candidates are a manual queue only. The bot never automatically quotes, replies, likes, follows, or sends DMs.
+- Operational alerts are written locally under `outputs/alerts`. Set
+  `DISCORD_ALERTS_ENABLED=true` and `DISCORD_WEBHOOK_URL` in `.env` to deliver
+  only newly detected and resolved alert state changes to Discord.
+- Set `DISCORD_POST_NOTIFICATIONS_ENABLED=true` to mirror successful X posts
+  with their full text and X URL. Production uses result-only Discord
+  notifications: keep `DISCORD_LOGS_ENABLED=false` so detailed stdout, stderr,
+  decision, and runtime logs stay local. Enable it only temporarily when
+  detailed remote diagnostics are explicitly required.
+
+Inspection commands:
+
+```powershell
+.\.venv\Scripts\python.exe local_finance_bot.py config-status
+.\.venv\Scripts\python.exe local_finance_bot.py radar-plan
+.\.venv\Scripts\python.exe local_finance_bot.py experiments --weekly
+.\.venv\Scripts\python.exe local_finance_bot.py metrics-status
+.\.venv\Scripts\python.exe local_finance_bot.py quote-queue --pending
+.\.venv\Scripts\python.exe local_finance_bot.py alerts
+.\.venv\Scripts\python.exe local_finance_bot.py xai-cost-report --days 30
+.\.venv\Scripts\python.exe local_finance_bot.py xai-roi-report --days 30
+.\.venv\Scripts\python.exe local_finance_bot.py alerts-self-test
+.\.venv\Scripts\python.exe local_finance_bot.py health-check
+```
+
+Current cost and quality controls:
+
+- Normal xAI radar windows are `21:00` and `22:30` JST, capped at 2 searches/day.
+  Event mode is capped at 4 searches/day. Each search is limited to 5 topics,
+  2 representative posts and 2 accounts per topic.
+- Cache keys include the effective query configuration. Cache hits/misses and
+  reported-versus-estimated costs are observable; reported cost and estimates
+  are never added together.
+- Metrics runs every 30 minutes and prioritizes the closest 1h/6h/24h deadline.
+  Misses and unavailable/deleted posts retain explicit reason codes.
+- Daily report subtasks are isolated. `partial_success` uses exit code 2 and
+  saves per-task status under `outputs/reports`.
+- Follow conversion remains `unavailable` unless X actually supplies follow and
+  profile-click metrics. The bot does not fabricate this KPI.

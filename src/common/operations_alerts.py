@@ -1,0 +1,358 @@
+"""Operational alerts with local persistence and optional Discord delivery."""
+from __future__ import annotations
+import hashlib
+import json
+import os
+import re
+import tempfile
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import requests
+
+try: from runtime import JST, output_dir, state_dir, log_dir
+except ImportError: from common.runtime import JST, output_dir, state_dir, log_dir
+
+TRUE_VALUES = {"1", "true", "yes", "on"}
+DISCORD_HOSTS = {"discord.com", "discordapp.com"}
+SECRET_FIELD_RE = re.compile(
+    r"(?i)(api[_ -]?key|token|secret|authorization|webhook[_ -]?url)"
+    r"(\s*[:=]\s*)([^\s,;]+)"
+)
+SECRET_TOKEN_RE = re.compile(
+    r"(?i)(https://(?:discord(?:app)?\.com)/api/webhooks/\d+/)[A-Za-z0-9._-]+"
+    r"|\b(?:sk|xai|gho)-[A-Za-z0-9_-]{12,}\b"
+)
+
+
+def _read_json(path: Path, default):
+    try: return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError): return default
+
+
+def _jsonl(path: Path) -> list[dict]:
+    if not path.exists(): return []
+    rows=[]
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row=json.loads(line)
+            if isinstance(row,dict): rows.append(row)
+        except json.JSONDecodeError: pass
+    return rows
+
+
+def evaluate(now: datetime | None=None) -> list[dict]:
+    if os.getenv("ALERTS_ENABLED","true").lower() not in ("1","true","yes"): return []
+    now=(now or datetime.now(JST)).astimezone(JST); alerts=[]
+    heartbeat=_read_json(state_dir()/"daemon_heartbeat.json",{})
+    try: updated=datetime.fromisoformat(heartbeat.get("updated_at","")).astimezone(JST)
+    except (ValueError,TypeError): updated=None
+    stale=int(os.getenv("ALERT_HEARTBEAT_STALE_MINUTES","10"))
+    if not updated or now-updated>timedelta(minutes=stale):
+        alerts.append({"code":"heartbeat_stale","severity":"high","detail":f"heartbeat older than {stale} minutes"})
+    runs=_jsonl(log_dir()/"run_history.jsonl")
+    threshold=int(os.getenv("ALERT_CONSECUTIVE_FAILURE_THRESHOLD","3"))
+    by_bot={}
+    for row in runs:
+        by_bot.setdefault(str(row.get("bot","unknown")),[]).append(row)
+    for bot, rows in by_bot.items():
+        recent=rows[-threshold:]
+        if len(recent)==threshold and all(int(r.get("returncode",0) or 0)!=0 for r in recent):
+            alerts.append({"code":"consecutive_failures","severity":"high","bot":bot,"detail":f"{threshold} consecutive failures"})
+    for path, code in ((state_dir()/"post_registry.jsonl","post_registry_jsonl_corrupt"),
+                       (state_dir()/"metrics_snapshots.jsonl","metrics_jsonl_corrupt")):
+        if path.exists():
+            for number,line in enumerate(path.read_text(encoding="utf-8",errors="replace").splitlines(),1):
+                try: json.loads(line)
+                except json.JSONDecodeError:
+                    alerts.append({"code":code,"severity":"medium","detail":f"line {number}"}); break
+    return [{**row,"detected_at":now.isoformat()} for row in alerts]
+
+
+def write_alerts(now: datetime | None=None) -> tuple[Path,list[dict]]:
+    now=(now or datetime.now(JST)).astimezone(JST); rows=evaluate(now)
+    folder=output_dir("alerts"); current=folder/"current_alerts.json"
+    folder.mkdir(parents=True,exist_ok=True)
+    try:
+        _atomic_write(current,json.dumps(rows,ensure_ascii=False,indent=2)+"\n")
+    except OSError as exc:
+        fallback=log_dir()/"critical_fallback.log"; fallback.parent.mkdir(parents=True,exist_ok=True)
+        with fallback.open("a",encoding="utf-8") as handle:
+            handle.write(f"{now.isoformat()} alerts_write_failed {type(exc).__name__}\n")
+        return fallback,rows
+    md=folder/f"{now:%Y-%m-%d}.md"
+    lines=[f"# Operations alerts {now:%Y-%m-%d}",""]+[f"- [{r['severity']}] {r['code']}: {r['detail']}" for r in rows]
+    if not rows: lines.append("- No active alerts")
+    _atomic_write(md,"\n".join(lines)+"\n")
+    delivery=send_discord_alerts(rows,now=now)
+    _atomic_write(folder/"discord_delivery.json",
+                  json.dumps(delivery,ensure_ascii=False,indent=2)+"\n")
+    return current,rows
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    descriptor,name=tempfile.mkstemp(prefix=f".{path.name}.",suffix=".tmp",dir=path.parent)
+    try:
+        with os.fdopen(descriptor,"w",encoding="utf-8") as handle:
+            handle.write(text); handle.flush(); os.fsync(handle.fileno())
+        os.replace(name,path)
+    finally:
+        if os.path.exists(name): os.unlink(name)
+
+
+def _discord_state_path() -> Path:
+    return state_dir()/"discord_alert_state.json"
+
+
+def _alert_key(row: dict) -> str:
+    stable={
+        "code":str(row.get("code") or ""),
+        "bot":str(row.get("bot") or ""),
+        "detail":str(row.get("detail") or ""),
+    }
+    raw=json.dumps(stable,ensure_ascii=False,sort_keys=True,separators=(",",":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _discord_webhook_url() -> str:
+    from urllib.parse import urlparse
+
+    url=os.getenv("DISCORD_WEBHOOK_URL","").strip()
+    if not url:
+        return ""
+    parsed=urlparse(url)
+    if parsed.scheme!="https" or parsed.hostname not in DISCORD_HOSTS:
+        return ""
+    if not parsed.path.startswith("/api/webhooks/"):
+        return ""
+    return url
+
+
+def _discord_message(new_rows: list[dict], resolved_count: int, now: datetime) -> str:
+    lines=[]
+    if new_rows:
+        lines.append(f"🚨 finance-narrative: {len(new_rows)}件の新しい運用アラート")
+        for row in new_rows[:10]:
+            severity=str(row.get("severity") or "unknown").upper()
+            bot=f" bot={row['bot']}" if row.get("bot") else ""
+            detail=str(row.get("detail") or "")[:300]
+            lines.append(f"• [{severity}] {row.get('code','unknown')}{bot}: {detail}")
+        if len(new_rows)>10:
+            lines.append(f"• ほか {len(new_rows)-10}件")
+    if resolved_count:
+        lines.append(f"✅ {resolved_count}件のアラートが解消しました")
+    lines.append(f"検知時刻: {now:%Y-%m-%d %H:%M:%S} JST")
+    return "\n".join(lines)[:1900]
+
+
+def redact_discord_text(value: object) -> str:
+    """Remove common credentials before any content leaves the machine."""
+    text=str(value)
+    text=SECRET_FIELD_RE.sub(lambda match:f"{match.group(1)}{match.group(2)}<redacted>",text)
+    text=SECRET_TOKEN_RE.sub(
+        lambda match:(match.group(1)+"<redacted>") if match.group(1) else "<redacted>",
+        text,
+    )
+    for name, secret in os.environ.items():
+        if secret and len(secret)>=12 and any(
+            marker in name.upper() for marker in ("KEY","TOKEN","SECRET","WEBHOOK")
+        ):
+            text=text.replace(secret,"<redacted>")
+    return text
+
+
+def _discord_log_queue_path() -> Path:
+    return state_dir()/"discord_log_queue.jsonl"
+
+
+def queue_discord_log(source: str, value: object, *,
+                      level: str="INFO", now: datetime | None=None) -> bool:
+    """Durably queue a redacted log entry for batched Discord delivery."""
+    if os.getenv("DISCORD_LOGS_ENABLED","false").strip().lower() not in TRUE_VALUES:
+        return False
+    timestamp=(now or datetime.now(JST)).astimezone(JST).isoformat()
+    safe_message=redact_discord_text(value)
+    parts=[safe_message[index:index+1400]
+           for index in range(0,max(1,len(safe_message)),1400)]
+    path=_discord_log_queue_path()
+    path.parent.mkdir(parents=True,exist_ok=True)
+    try:
+        with path.open("a",encoding="utf-8",newline="\n") as handle:
+            for part_number,part in enumerate(parts,1):
+                row={
+                    "ts":timestamp,
+                    "source":redact_discord_text(source)[:80],
+                    "level":str(level or "INFO").upper()[:20],
+                    "message":part,
+                }
+                if len(parts)>1:
+                    row["part"]=f"{part_number}/{len(parts)}"
+                handle.write(json.dumps(row,ensure_ascii=False)+"\n")
+        return True
+    except OSError:
+        return False
+
+
+def _log_chunks(rows: list[dict], limit: int=1850) -> list[tuple[str,int]]:
+    chunks=[]; current=[]; current_count=0
+    for row in rows:
+        timestamp=str(row.get("ts") or "")[11:19]
+        prefix=f"{timestamp} [{row.get('level','INFO')}] {row.get('source','log')}: "
+        if row.get("part"):
+            prefix+=f"({row['part']}) "
+        message=redact_discord_text(row.get("message") or "")
+        line=(prefix+message)[:limit]
+        candidate="\n".join(current+[line])
+        if current and len(candidate)>limit:
+            chunks.append(("\n".join(current),current_count))
+            current=[]; current_count=0
+        current.append(line); current_count+=1
+    if current:
+        chunks.append(("\n".join(current),current_count))
+    return chunks
+
+
+def flush_discord_logs(*, session=requests, max_batches: int | None=None) -> dict:
+    """Send queued logs in bounded batches; unsent rows stay queued."""
+    if os.getenv("DISCORD_LOGS_ENABLED","false").strip().lower() not in TRUE_VALUES:
+        return {"status":"disabled","sent_batches":0,"sent_rows":0}
+    url=_discord_webhook_url()
+    if not url:
+        return {"status":"configuration_error","sent_batches":0,"sent_rows":0}
+    path=_discord_log_queue_path()
+    rows=_jsonl(path)
+    if not rows:
+        return {"status":"empty","sent_batches":0,"sent_rows":0}
+    batch_limit=max_batches if max_batches is not None else int(
+        os.getenv("DISCORD_LOG_MAX_BATCHES_PER_FLUSH","5") or 5
+    )
+    chunks=_log_chunks(rows)
+    sent_batches=0; sent_rows=0
+    for content,row_count in chunks[:max(1,batch_limit)]:
+        payload={
+            "username":"finance-narrative logs",
+            "allowed_mentions":{"parse":[]},
+            "content":"```text\n"+content[:1850]+"\n```",
+        }
+        try:
+            response=session.post(url,json=payload,timeout=10)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            remaining=rows[sent_rows:]
+            _atomic_write(path,"".join(json.dumps(row,ensure_ascii=False)+"\n" for row in remaining))
+            return {"status":"delivery_failed","error_type":type(exc).__name__,
+                    "sent_batches":sent_batches,"sent_rows":sent_rows,
+                    "remaining_rows":len(remaining)}
+        sent_batches+=1; sent_rows+=row_count
+    remaining=rows[sent_rows:]
+    _atomic_write(path,"".join(json.dumps(row,ensure_ascii=False)+"\n" for row in remaining))
+    return {"status":"sent" if sent_rows else "deferred",
+            "sent_batches":sent_batches,"sent_rows":sent_rows,
+            "remaining_rows":len(remaining)}
+
+
+def notify_x_post(record: dict, *, session=requests) -> dict:
+    """Notify Discord once for each successfully created X post."""
+    if os.getenv("DISCORD_POST_NOTIFICATIONS_ENABLED","false").strip().lower() not in TRUE_VALUES:
+        return {"status":"disabled","sent":False}
+    url=_discord_webhook_url()
+    if not url:
+        return {"status":"configuration_error","sent":False}
+    tweet_id=str(record.get("tweet_id") or "").strip()
+    if not tweet_id:
+        return {"status":"invalid_post","sent":False}
+    state_path=state_dir()/"discord_post_notifications.json"
+    state=_read_json(state_path,{"tweet_ids":[]})
+    sent_ids={str(item) for item in state.get("tweet_ids",[])}
+    if tweet_id in sent_ids:
+        return {"status":"duplicate","sent":False,"tweet_id":tweet_id}
+    bot=redact_discord_text(record.get("bot") or "unknown")
+    mode=redact_discord_text(record.get("mode") or "")
+    text=redact_discord_text(record.get("text") or record.get("title") or "（本文なし）")
+    x_url=f"https://x.com/i/web/status/{tweet_id}"
+    content=(
+        f"📣 Xへ投稿しました\n"
+        f"Bot: {bot} / mode: {mode or '-'}\n"
+        f"{text[:1450]}\n"
+        f"{x_url}"
+    )[:1900]
+    payload={"username":"finance-narrative posts",
+             "allowed_mentions":{"parse":[]},"content":content}
+    try:
+        response=session.post(url,json=payload,timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        queue_discord_log("discord.post_notification",
+                          f"tweet_id={tweet_id} delivery failed: {type(exc).__name__}",
+                          level="ERROR")
+        return {"status":"delivery_failed","error_type":type(exc).__name__,
+                "sent":False,"tweet_id":tweet_id}
+    sent_ids.add(tweet_id)
+    kept=sorted(sent_ids)[-2000:]
+    _atomic_write(state_path,json.dumps(
+        {"tweet_ids":kept,"updated_at":datetime.now(JST).isoformat()},
+        ensure_ascii=False,indent=2,
+    )+"\n")
+    return {"status":"sent","sent":True,"tweet_id":tweet_id}
+
+
+def send_discord_alerts(rows: list[dict], *, now: datetime | None=None,
+                        session=requests) -> dict:
+    """Send only state changes. A failed delivery is retried on the next run."""
+    now=(now or datetime.now(JST)).astimezone(JST)
+    if os.getenv("DISCORD_ALERTS_ENABLED","false").strip().lower() not in TRUE_VALUES:
+        return {"status":"disabled","sent":False,"checked_at":now.isoformat()}
+    url=_discord_webhook_url()
+    if not url:
+        return {"status":"configuration_error","reason":"webhook_url_missing_or_invalid",
+                "sent":False,"checked_at":now.isoformat()}
+
+    state_path=_discord_state_path()
+    previous=_read_json(state_path,{})
+    previous_keys=set(previous.get("active_keys",[]))
+    current_by_key={_alert_key(row):row for row in rows}
+    current_keys=set(current_by_key)
+    new_keys=current_keys-previous_keys
+    resolved_keys=previous_keys-current_keys
+    if not new_keys and not resolved_keys:
+        return {"status":"unchanged","sent":False,"active":len(current_keys),
+                "checked_at":now.isoformat()}
+
+    new_rows=[current_by_key[key] for key in sorted(new_keys)]
+    payload={
+        "username":"finance-narrative alerts",
+        "allowed_mentions":{"parse":[]},
+        "content":_discord_message(new_rows,len(resolved_keys),now),
+    }
+    try:
+        response=session.post(url,json=payload,timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        return {"status":"delivery_failed","error_type":type(exc).__name__,
+                "sent":False,"active":len(current_keys),"checked_at":now.isoformat()}
+
+    state={"active_keys":sorted(current_keys),"updated_at":now.isoformat()}
+    state_path.parent.mkdir(parents=True,exist_ok=True)
+    _atomic_write(state_path,json.dumps(state,ensure_ascii=False,indent=2)+"\n")
+    return {"status":"sent","sent":True,"new":len(new_keys),
+            "resolved":len(resolved_keys),"active":len(current_keys),
+            "checked_at":now.isoformat()}
+
+
+def self_test() -> dict:
+    folder=output_dir("alerts"); folder.mkdir(parents=True,exist_ok=True)
+    path=folder/f"self-test-{os.getpid()}.tmp"
+    try:
+        path.write_text("ok",encoding="utf-8")
+        readable=path.read_text(encoding="utf-8")=="ok"
+        path.unlink()
+        discord_enabled=os.getenv("DISCORD_ALERTS_ENABLED","false").strip().lower() in TRUE_VALUES
+        return {"status":"ok" if readable else "failed","path":str(folder),
+                "discord_enabled":discord_enabled,
+                "discord_webhook_configured":bool(_discord_webhook_url()),
+                "production_file_untouched":True}
+    except OSError as exc:
+        try: path.unlink(missing_ok=True)
+        except OSError: pass
+        return {"status":"failed","error_type":type(exc).__name__,"error":str(exc)[:240],
+                "path":str(folder),"production_file_untouched":True}

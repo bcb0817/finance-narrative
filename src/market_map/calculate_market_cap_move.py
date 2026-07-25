@@ -22,6 +22,16 @@ def calculate_market_cap_move(df: pd.DataFrame):
     """
     df = df.copy()
 
+    # yfinance/cache由来のJSON値が文字列でも計算できるよう、境界で数値化する。
+    # 変換不能な行は市場集計へ混ぜず、安全に除外する。
+    numeric_columns = ("current_price", "prev_close", "market_cap")
+    for column in numeric_columns:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+    df = df.dropna(subset=list(numeric_columns))
+    df = df[df["prev_close"] != 0].copy()
+    if df.empty:
+        raise ValueError("market map has no valid numeric rows")
+
     df["percent_change"] = df["current_price"] / df["prev_close"] - 1.0
     df["market_cap_change"] = df["market_cap"] * df["percent_change"]
 

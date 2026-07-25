@@ -32,6 +32,7 @@ import random
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone, date, time as dtime
 from pathlib import Path
@@ -63,7 +64,7 @@ except Exception:
     ET = timezone(timedelta(hours=-4))  # 近似フォールバック
 
 BOTS = ("news", "narrative", "market-map", "weekly")
-SCHED_BOTS = BOTS + ("report",)   # daemonで回す対象（reportは日次）
+SCHED_BOTS = BOTS + ("metrics", "report", "radar")
 
 DEFAULT_SCHEDULE = {
     "news": {"enabled": True, "type": "interval_minutes", "every_minutes": 30,
@@ -71,11 +72,13 @@ DEFAULT_SCHEDULE = {
     "narrative": {"enabled": True, "type": "et_times_business_days",
                   "times": ["08:30", "09:35", "16:05"]},
     "market-map": {"enabled": True, "type": "et_times_business_days",
-                   "times": ["09:35"]},
+                   "times": ["09:35", "15:50"]},
     "weekly": {"enabled": True, "type": "weekly_jst",
                "weekday": 6, "time": "21:00"},  # weekday: 0=月 ... 6=日
     # 投稿実績レポート（毎日22:00 JST。X APIから実績を取得して集計）
     "report": {"enabled": True, "type": "daily_jst", "time": "22:00"},
+    "metrics": {"enabled": True, "type": "interval_minutes", "every_minutes": 30},
+    "radar": {"enabled": False, "type": "daily_jst_times", "times": ["21:00","22:30"]},
 }
 
 
@@ -101,6 +104,15 @@ def load_schedule() -> dict:
     dm = os.environ.get("NEWS_DEFAULT_MODE", "").strip().lower()
     if dm in ("image", "diagram", "random"):
         sched["news"]["default_mode"] = dm
+    sched["metrics"]["enabled"] = os.environ.get("X_METRICS_ENABLED", "true").lower() in ("1", "true", "yes")
+    interval = os.environ.get("X_METRICS_INTERVAL_MINUTES", "60")
+    if interval.isdigit() and int(interval) > 0: sched["metrics"]["every_minutes"] = int(interval)
+    # schedule.enabled is authoritative; feature flags are an additional AND condition.
+    sched["radar"]["enabled"] = bool(sched["radar"].get("enabled", False)) and (
+        os.environ.get("XAI_ENABLED", "false").lower() in ("1", "true", "yes")) and (
+        os.environ.get("XAI_X_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes"))
+    radar_interval = os.environ.get("XAI_SEARCH_INTERVAL_MINUTES", "60")
+    if radar_interval.isdigit() and int(radar_interval) > 0: sched["radar"]["every_minutes"] = int(radar_interval)
     return sched
 
 
@@ -119,8 +131,15 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    _state_path().write_text(
-        json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path = _state_path()
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        print(f"[WARN] 状態保存に失敗（Bot処理は継続）: {type(exc).__name__}")
+        try: tmp.unlink(missing_ok=True)
+        except OSError: pass
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +196,8 @@ def next_run_utc(bot: str, sched: dict, now_utc: datetime | None = None) -> date
         return _next_weekly_jst(now_utc, int(conf.get("weekday", 6)), conf.get("time", "21:00"))
     if t == "daily_jst":
         return _next_daily_jst(now_utc, conf.get("time", "22:00"))
+    if t == "daily_jst_times":
+        return _next_jst_times(now_utc, list(conf.get("times", [])))
     return None
 
 
@@ -188,6 +209,18 @@ def _next_daily_jst(now_utc: datetime, hhmm: str) -> datetime:
     if cand <= now_jst:
         cand = cand + timedelta(days=1)
     return cand.astimezone(timezone.utc)
+
+
+def _next_jst_times(now_utc: datetime, times: list[str]) -> datetime:
+    now_jst = now_utc.astimezone(JST)
+    for add_days in (0, 1):
+        day = (now_jst + timedelta(days=add_days)).date()
+        for hhmm in sorted(times):
+            h, m = map(int, hhmm.split(":"))
+            candidate = datetime.combine(day, dtime(h, m), tzinfo=JST)
+            if candidate > now_jst:
+                return candidate.astimezone(timezone.utc)
+    return (now_jst + timedelta(days=1)).astimezone(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +236,12 @@ def _decode_child_output(data: bytes | None) -> str:
     except UnicodeDecodeError:
         # 外部ツール等がCP932を返した場合だけ互換フォールバックする。
         return data.decode("cp932", errors="replace")
+
+
+def _failure_summary(stderr: str, limit: int = 500) -> str:
+    """Return a compact, JSONL-safe reason for a failed child process."""
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    return (lines[-1] if lines else "child process failed without stderr")[:limit]
 
 
 def _news_mode(sched: dict, cli_mode: str | None) -> str:
@@ -227,24 +266,46 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
     if force:
         env["FORCE_POST"] = "true"  # スケジュール条件のみ無視。安全審査はバイパスしない。
 
-    if bot == "report":
+    if bot in ("report", "metrics", "radar"):
         started = datetime.now(JST)
-        print(f"[RUN] bot=report started={started:%Y-%m-%d %H:%M:%S}")
+        print(f"[RUN] bot={bot} started={started:%Y-%m-%d %H:%M:%S}")
         try:
-            cmd_report(days=1)
-            rc, err = 0, ""
+            if bot == "report":
+                report_result=cmd_report(days=1)
+                rc=int(report_result.get("exit_code",0))
+            elif bot == "metrics":
+                from common.metrics_collector import collect_metrics
+                metrics_result = collect_metrics()
+                print(json.dumps(metrics_result, ensure_ascii=False))
+                if metrics_result.get("status") == "error":
+                    raise RuntimeError(
+                        f"metrics collection failed: {metrics_result.get('status_code') or metrics_result.get('error_type') or 'unknown'}")
+            else:
+                from common.xai_radar import refresh
+                radar_result = refresh()
+                print(json.dumps(radar_result, ensure_ascii=False))
+                # disabled/key missing/budget超過は既存Bot継続のため正常終了。
+                if radar_result.get("status") == "error":
+                    raise RuntimeError(f"radar failed: {radar_result.get('reason','unknown')}")
+            if bot != "report": rc=0
+            err = "" if rc in (0,2) else "report failed"
         except Exception as e:  # noqa: BLE001
             rc, err = 1, f"{type(e).__name__}: {e}"
-            print(f"[RUN] report 失敗: {err}")
-        result = {"bot": "report", "mode": "report", "force": force,
+            print(f"[RUN] {bot} 失敗: {err}")
+        result = {"bot": bot, "mode": bot, "force": force,
                   "started_at": started.isoformat(),
                   "finished_at": datetime.now(JST).isoformat(),
                   "returncode": rc, "error": err, "post_enabled": post_enabled()}
         log_run(result)
-        state = load_state(); state.setdefault("report", {})
-        state["report"]["last_run_at"] = started.isoformat()
-        state["report"]["last_result"] = {"returncode": rc, "error": err}
+        state = load_state(); state.setdefault(bot, {})
+        state[bot]["last_run_at"] = started.isoformat()
+        state[bot]["last_result"] = {"returncode": rc, "error": err}
         save_state(state)
+        try:
+            from common.operations_alerts import flush_discord_logs
+            flush_discord_logs()
+        except Exception as exc:
+            print(f"[WARN] Discordログ送信失敗（daemonは継続）: {type(exc).__name__}")
         return result
 
     if bot == "news":
@@ -287,11 +348,23 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
         err = ""
         child_stdout = _decode_child_output(proc.stdout)
         child_stderr = _decode_child_output(proc.stderr)
+        if rc != 0:
+            err = _failure_summary(child_stderr)
         # コンソールへも出しつつ、Bot別ログに追記保存
         if child_stdout:
             print(child_stdout, end="")
         if child_stderr:
             print(child_stderr, end="")
+        try:
+            from common.operations_alerts import queue_discord_log
+            if child_stdout:
+                queue_discord_log(f"{bot}.stdout",child_stdout,
+                                  level="INFO")
+            if child_stderr:
+                queue_discord_log(f"{bot}.stderr",child_stderr,
+                                  level="ERROR" if rc else "INFO")
+        except Exception:
+            pass
         header = f"\n===== {started:%Y-%m-%d %H:%M:%S} bot={bot} mode={run_mode} rc={rc} =====\n"
         try:
             with open(out_log, "a", encoding="utf-8") as f:
@@ -318,6 +391,14 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
         print(f"[RUN] bot={bot} 終了コード={rc} error={err or '-'}（詳細は logs/ を確認）")
     else:
         print(f"[RUN] bot={bot} 正常終了")
+        if bot == "weekly":
+            try:
+                from common.media_intelligence import write_weekly_media_plan
+                from common.metrics_collector import load_snapshots
+                history = json.loads((state_dir() / "posted_history.json").read_text(encoding="utf-8"))
+                write_weekly_media_plan(history, load_snapshots())
+            except Exception as exc:
+                print(f"[WARN] 週次メディア企画の生成失敗（weekly投稿は維持）: {exc}")
 
     # 状態更新
     state = load_state()
@@ -325,6 +406,11 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
     state[bot]["last_run_at"] = started.isoformat()
     state[bot]["last_result"] = {"returncode": rc, "error": err}
     save_state(state)
+    try:
+        from common.operations_alerts import flush_discord_logs
+        flush_discord_logs()
+    except Exception as exc:
+        print(f"[WARN] Discordログ送信失敗（daemonは継続）: {type(exc).__name__}")
     return result
 
 
@@ -360,6 +446,10 @@ def cmd_status() -> None:
         from common.api_costs import monthly_openai_cost
         openai_limit = float(os.getenv("OPENAI_MONTHLY_BUDGET_USD", "5.0") or 5.0)
         print(f"OPENAI COST : ${monthly_openai_cost():.2f}/${openai_limit:.2f} this month")
+        from common.xai_radar import usage_summary as xai_usage_summary
+        xai=xai_usage_summary()
+        print(f"xAI COST    : ${xai['spent_usd']:.4f}/${xai['budget_usd']:.2f} "
+              f"remaining=${xai['remaining_usd']:.4f} calls(today/month)={xai['daily_calls']}/{xai['monthly_calls']}")
     except Exception as exc:
         print(f"POST LIMIT  : unavailable ({exc})")
 
@@ -417,6 +507,170 @@ def cmd_init_state() -> None:
     print(f"[init-state] 保存先: {_state_path()}")
     print("[init-state] daemon 起動後は未来のスケジュールから通常運用します"
           "（CATCH_UP_ENABLED=false のため過去スロットは追いかけません）。")
+
+
+def cmd_ai_status() -> None:
+    from common.openai_service import configuration_status, usage_path, embeddings_path
+    status = configuration_status()
+    print("=== OpenAI role status ===")
+    print(f"API key configured : {'yes' if status['api_key_configured'] else 'no'}")
+    print(f"allowed validation : {'ok' if status['valid'] else 'ERROR'}")
+    print(f"Responses API      : {status['responses_api']}")
+    for role, row in status["roles"].items():
+        print(f"  {role:14s} model={row['model']:24s} enabled={row['enabled']} calls_today={status['counts'].get(role, 0)}")
+    for error in status["errors"]: print(f"  ERROR: {error}")
+    print(f"usage log          : {usage_path()}")
+    print(f"embedding store    : {embeddings_path()}")
+
+
+def cmd_ai_smoke(dry_run: bool) -> None:
+    from common.openai_service import configuration_status
+    status = configuration_status()
+    if not dry_run:
+        raise SystemExit("ai-smokeは --dry-run のみ許可しています")
+    print("[ai-smoke] config-only dry-run（API・X投稿は呼びません）")
+    print(f"[ai-smoke] model validation={'ok' if status['valid'] else 'error'}")
+    if not status["valid"]: raise SystemExit(2)
+
+
+def cmd_ai_deep() -> None:
+    from common.openai_config import OpenAIRole, env_bool
+    from common.openai_service import OpenAIService
+    if not env_bool("OPENAI_DEEP_ANALYSIS_ENABLED", False):
+        print("[ai-deep] disabled: OPENAI_DEEP_ANALYSIS_ENABLED=false")
+        return
+    history_path = state_dir() / "posted_history.json"
+    history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else []
+    prompt = "以下の過去投稿だけを根拠に、金融メディアの月次改善計画を作成。最新市況を推測しない。\n" + json.dumps(history[-100:], ensure_ascii=False)
+    result = OpenAIService().text(prompt, role=OpenAIRole.DEEP_ANALYZE,
+                                  max_tokens=4000, operation="manual_deep_analysis", reasoning="medium")
+    out = output_dir("deep_analysis") / f"strategy_{datetime.now(JST):%Y%m%d}.md"
+    out.write_text(result, encoding="utf-8")
+    print(f"[ai-deep] saved: {out}")
+
+
+def cmd_ai_batch_status(batch_id: str = "", collect: bool = False) -> None:
+    from common.openai_batch import collect as collect_batch, config_status, latest_batches, refresh
+    if batch_id:
+        result = collect_batch(batch_id) if collect else refresh(batch_id)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    print(json.dumps({**config_status(), "batches": list(latest_batches().values())[-10:]},
+                     ensure_ascii=False, indent=2))
+
+
+def cmd_ai_batch_smoke() -> None:
+    from common.openai_batch import build_request_file, validate_request_file
+    with tempfile.TemporaryDirectory() as temp:
+        path = build_request_file([{"custom_id": "smoke-1", "input": "Batch API dry-run",
+                                    "max_output_tokens": 32}], operation="smoke",
+                                  output_path=Path(temp) / "smoke.jsonl")
+        count = validate_request_file(path)
+    print(f"[ai-batch-smoke] OK requests={count} API upload/submission=none")
+
+
+def cmd_ai_batch_submit(path: str, operation: str) -> None:
+    from common.openai_batch import submit
+    print(json.dumps(submit(Path(path).resolve(), operation=operation), ensure_ascii=False, indent=2))
+
+
+def cmd_ai_batch_cancel(batch_id: str) -> None:
+    from common.openai_batch import cancel
+    print(json.dumps(cancel(batch_id), ensure_ascii=False, indent=2))
+
+
+def cmd_xai_status() -> None:
+    from common.xai_radar import status
+    row=status()
+    print("=== xAI radar status ===")
+    print(f"enabled={row['enabled']} ready={row['ready']}")
+    print(f"model={row['model']} API key configured={'yes' if row['api_key_configured'] else 'no'}")
+    print(f"reason={row['reason']} cached_topics={row['cache']['topic_count']} hit_rate={row['cache']['hit_rate']}")
+    print(f"calls today={row['usage']['daily_calls']}/{row['usage']['daily_limit']} total={row['usage']['calls']}")
+    print(
+        f"effective_cost=${row['usage']['total_effective_cost_usd']:.4f}"
+        f"/${row['usage']['budget_usd']:.2f}"
+        f" remaining=${row['usage']['remaining_usd']:.4f}"
+    )
+
+
+def cmd_config_status() -> None:
+    from common.growth_config import effective_radar_status
+    schedule=load_schedule(); result={"radar":effective_radar_status(schedule.get("radar",{})),
+        "post_enabled":post_enabled(),"experiments_enabled":os.getenv("EXPERIMENTS_ENABLED","true").lower() in ("1","true","yes"),
+        "alerts_enabled":os.getenv("ALERTS_ENABLED","true").lower() in ("1","true","yes"),
+        "batch_enabled":os.getenv("OPENAI_BATCH_ENABLED","false").lower() in ("1","true","yes")}
+    print(json.dumps(result,ensure_ascii=False,indent=2))
+
+
+def cmd_radar_plan() -> None:
+    from common.xai_radar import radar_plan
+    print(json.dumps(radar_plan(),ensure_ascii=False,indent=2))
+
+
+def cmd_metrics_status() -> None:
+    from common.metrics_collector import metrics_status
+    print(json.dumps(metrics_status(),ensure_ascii=False,indent=2))
+
+
+def cmd_alerts(clear_resolved: bool=False) -> None:
+    from common.operations_alerts import write_alerts
+    path,rows=write_alerts()
+    print(json.dumps({"active":len(rows),"path":str(path),"alerts":rows},ensure_ascii=False,indent=2))
+
+
+def cmd_health() -> None:
+    from common.ops_quality import health_check
+    print(json.dumps(health_check(),ensure_ascii=False,indent=2))
+
+
+def cmd_xai_cost(days: int=30) -> None:
+    from common.xai_radar import cost_report
+    print(json.dumps(cost_report(days),ensure_ascii=False,indent=2))
+
+
+def cmd_xai_roi(days: int=30) -> None:
+    from common.ops_quality import xai_roi_report
+    print(json.dumps(xai_roi_report(days),ensure_ascii=False,indent=2))
+
+
+def cmd_alert_self_test() -> None:
+    from common.operations_alerts import self_test
+    print(json.dumps(self_test(),ensure_ascii=False,indent=2))
+
+
+def cmd_radar(refresh_now: bool=False) -> None:
+    from common.xai_radar import load_cache, refresh
+    result=refresh() if refresh_now else {"status":"cache","topics":load_cache()}
+    print(f"radar status={result.get('status')} topics={len(result.get('topics',[]))}")
+    for row in result.get("topics",[]): print(f"- {row.get('topic')} acceleration={row.get('acceleration_score')} confirmation={row.get('news_confirmation_status')}")
+
+
+def cmd_quote_queue(today=False,pending=False) -> None:
+    from common.quote_queue import list_queue
+    rows=list_queue(today=today,pending=pending)
+    print(f"quote queue: {len(rows)}件（自動投稿なし）")
+    for row in rows:
+        print(f"- [{row.get('status')}] {row.get('detected_topic')} @{row.get('source_username')} {row.get('source_post_url')}")
+
+
+def cmd_experiments(weekly=False) -> None:
+    from common.experiments import variant_summary
+    from common.metrics_collector import load_snapshots
+    path=state_dir()/"posted_history.json"
+    posts=json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    rows=variant_summary(posts,load_snapshots())
+    print(f"experiments: {len(rows)} variants")
+    for row in rows: print(f"- {row['variant']} n={row['sample_size']} iph={row['mean_impressions_per_hour']} confidence={row['confidence']}")
+
+
+def cmd_series_drafts(series_id="") -> None:
+    from common.series_drafts import create_draft,load_series
+    if not series_id:
+        for row in load_series(): print(f"- {row['series_id']} enabled={row['enabled']} title={row['title']}")
+        return
+    path=state_dir()/"posted_history.json"; sources=json.loads(path.read_text(encoding="utf-8"))[-10:] if path.exists() else []
+    print(f"series draft saved: {create_draft(series_id,sources)}")
 
 
 def _acquire_lock() -> Path | None:
@@ -507,7 +761,7 @@ def _write_heartbeat(*, status: str, next_bot: str | None = None,
     os.replace(tmp, path)
 
 
-def cmd_report(days: int = 1) -> None:
+def cmd_report_legacy(days: int = 1) -> None:
     """投稿実績レポート（インプレ/いいね/RT + テーマ別分析）を表示し、logs にも保存する。"""
     try:
         from common.report import build_report
@@ -515,6 +769,12 @@ def cmd_report(days: int = 1) -> None:
         sys.path.insert(0, str(SRC_DIR / "common"))
         from report import build_report
 
+    try:
+        from common.daily_log_analysis import analyze_daily_logs
+        log_analysis=analyze_daily_logs()
+        print(f"[log-analysis] status={log_analysis['status']} errors={log_analysis['summary']['errors']}")
+    except Exception as exc:
+        print(f"[WARN] daily log analysis failed; report continues: {type(exc).__name__}")
     text = build_report(days=days)
     print(text)
     try:
@@ -525,6 +785,20 @@ def cmd_report(days: int = 1) -> None:
         print(f"\n（保存しました: {f}）")
     except OSError as e:
         print(f"[WARN] レポートの保存に失敗: {e}")
+
+
+def cmd_report(days: int = 1) -> dict:
+    from common.report_orchestrator import run_daily_report
+    result=run_daily_report(days)
+    report_task=next((task for task in result["tasks"] if task["name"]=="performance_report"),{})
+    if report_task.get("status")=="success":
+        print(report_task.get("result",""))
+    print(json.dumps({
+        "status":result["status"],"exit_code":result["exit_code"],"status_file":result["status_file"],
+        "tasks":[{"name":task["name"],"status":task["status"],"error_type":task.get("error_type")}
+                 for task in result["tasks"]],
+    },ensure_ascii=False,indent=2))
+    return result
 
 
 def cmd_daemon() -> None:
@@ -563,8 +837,11 @@ def cmd_daemon() -> None:
                 break
             plans.sort()
             nxt, bot = plans[0]
-            _write_heartbeat(status="waiting", next_bot=bot, next_run=nxt)
-            print(f"[daemon] 次回: {bot} @ {nxt.astimezone(JST):%Y-%m-%d %H:%M} JST")
+            due_bots = [name for planned_at, name in plans
+                        if abs((planned_at - nxt).total_seconds()) < 1]
+            next_label = ",".join(due_bots)
+            _write_heartbeat(status="waiting", next_bot=next_label, next_run=nxt)
+            print(f"[daemon] 次回: {next_label} @ {nxt.astimezone(JST):%Y-%m-%d %H:%M} JST")
 
             # sleepは分割して Ctrl+C に応答
             while not stop["flag"]:
@@ -572,18 +849,19 @@ def cmd_daemon() -> None:
                 if remain <= 0:
                     break
                 time.sleep(min(remain, 30))
-                _write_heartbeat(status="waiting", next_bot=bot, next_run=nxt)
+                _write_heartbeat(status="waiting", next_bot=next_label, next_run=nxt)
             if stop["flag"]:
                 break
 
-            delay_min = (datetime.now(timezone.utc) - nxt).total_seconds() / 60.0
-            if delay_min > window and not catch_up:
-                print(f"[daemon] {bot}: 予定より{delay_min:.0f}分遅延（window={window}分超）のためスキップ")
-                log_run({"bot": bot, "skipped": True,
-                         "reason": f"delayed {delay_min:.0f}min > window {window}min"})
-                continue
-            _write_heartbeat(status="running", next_bot=bot, next_run=nxt)
-            run_bot(bot, sched=sched)
+            for due_bot in due_bots:
+                delay_min = (datetime.now(timezone.utc) - nxt).total_seconds() / 60.0
+                if delay_min > window and not catch_up:
+                    print(f"[daemon] {due_bot}: 予定より{delay_min:.0f}分遅延（window={window}分超）のためスキップ")
+                    log_run({"bot": due_bot, "skipped": True,
+                             "reason": f"delayed {delay_min:.0f}min > window {window}min"})
+                    continue
+                _write_heartbeat(status="running", next_bot=due_bot, next_run=nxt)
+                run_bot(due_bot, sched=sched)
     finally:
         try:
             _write_heartbeat(status="stopped")
@@ -598,6 +876,14 @@ def cmd_daemon() -> None:
 
 def main() -> None:
     load_env()
+    try:
+        from common.openai_config import validate_models
+        model_errors = validate_models()
+        if model_errors:
+            print("[ERROR] OpenAIモデル設定が許可リスト外です。OpenAI機能を安全停止します。")
+            for error in model_errors: print(f"[ERROR] {error}")
+    except Exception as exc:
+        print(f"[WARN] OpenAIモデル設定の検証に失敗: {type(exc).__name__}")
     try:
         from common.runtime import setup_file_logging
         setup_file_logging()
@@ -619,6 +905,41 @@ def main() -> None:
         sp.add_argument("--mode", choices=["image", "diagram"], default=None,
                         help="newsのみ有効")
     sub.add_parser("daemon")
+    sub.add_parser("ai-status", help="OpenAIの役割・モデル・当日利用回数を表示")
+    smoke = sub.add_parser("ai-smoke", help="OpenAI設定をAPI呼び出しなしで検証")
+    smoke.add_argument("--dry-run", action="store_true", required=True)
+    sub.add_parser("ai-deep", help="有効時のみSolで手動戦略分析（1日1回）")
+    sub.add_parser("xai-status", help="xAI X Searchレーダーの状態と予算")
+    xsmoke=sub.add_parser("xai-smoke", help="xAI設定を呼び出しなしで確認")
+    xsmoke.add_argument("--dry-run",action="store_true",required=True)
+    radar=sub.add_parser("radar",help="X話題レーダーを表示")
+    batch_status = sub.add_parser("ai-batch-status", help="Batch API configuration and job status")
+    batch_status.add_argument("--batch-id", default="")
+    batch_status.add_argument("--collect", action="store_true")
+    sub.add_parser("ai-batch-smoke", help="Validate Batch JSONL without an API call")
+    batch_submit = sub.add_parser("ai-batch-submit", help="Submit an analysis JSONL file")
+    batch_submit.add_argument("input")
+    batch_submit.add_argument("--operation", default="manual_analysis")
+    batch_cancel = sub.add_parser("ai-batch-cancel", help="Cancel a Batch job")
+    batch_cancel.add_argument("batch_id")
+    sub.add_parser("config-status", help="Feature flags and effective configuration")
+    sub.add_parser("radar-plan", help="Today's xAI priority-window allocation")
+    sub.add_parser("metrics-status", help="Metrics collection status")
+    sub.add_parser("health-check", help="Windows local daemon and data-quality health")
+    xcost=sub.add_parser("xai-cost-report", help="xAI exclusive cost report")
+    xcost.add_argument("--days",type=int,default=30)
+    xroi=sub.add_parser("xai-roi-report", help="xAI influence and ROI report")
+    xroi.add_argument("--days",type=int,default=30)
+    sub.add_parser("alerts-self-test",help="Test alert writes without touching production files")
+    alerts=sub.add_parser("alerts", help="Local operational alerts")
+    alerts.add_argument("--clear-resolved",action="store_true")
+    radar.add_argument("--refresh",action="store_true")
+    quote=sub.add_parser("quote-queue",help="手動引用候補を表示（自動投稿なし）")
+    quote.add_argument("--today",action="store_true"); quote.add_argument("--pending",action="store_true")
+    experiments=sub.add_parser("experiments",help="投稿実験のvariant集計")
+    experiments.add_argument("--weekly",action="store_true")
+    series=sub.add_parser("series-drafts",help="定番シリーズの草案生成（自動投稿なし）")
+    series.add_argument("--series-id",default="")
     args = ap.parse_args()
 
     if args.cmd == "status":
@@ -626,11 +947,39 @@ def main() -> None:
     elif args.cmd == "init-state":
         cmd_init_state()
     elif args.cmd == "report":
-        cmd_report(days=args.days)
+        result=cmd_report(days=args.days)
+        if result.get("exit_code") == 1: raise SystemExit(1)
     elif args.cmd in ("once", "force"):
-        run_bot(args.bot, mode=getattr(args, "mode", None), force=(args.cmd == "force"))
+        result = run_bot(args.bot, mode=getattr(args, "mode", None), force=(args.cmd == "force"))
+        if result.get("returncode", 0) != 0:
+            raise SystemExit(1)
     elif args.cmd == "daemon":
         cmd_daemon()
+    elif args.cmd == "ai-status":
+        cmd_ai_status()
+    elif args.cmd == "ai-smoke":
+        cmd_ai_smoke(args.dry_run)
+    elif args.cmd == "ai-deep":
+        cmd_ai_deep()
+    elif args.cmd == "ai-batch-status": cmd_ai_batch_status(args.batch_id, args.collect)
+    elif args.cmd == "ai-batch-smoke": cmd_ai_batch_smoke()
+    elif args.cmd == "ai-batch-submit": cmd_ai_batch_submit(args.input, args.operation)
+    elif args.cmd == "ai-batch-cancel": cmd_ai_batch_cancel(args.batch_id)
+    elif args.cmd == "xai-status": cmd_xai_status()
+    elif args.cmd == "xai-smoke":
+        print("[xai-smoke] config-only dry-run（検索・投稿なし）"); cmd_xai_status()
+    elif args.cmd == "config-status": cmd_config_status()
+    elif args.cmd == "radar-plan": cmd_radar_plan()
+    elif args.cmd == "metrics-status": cmd_metrics_status()
+    elif args.cmd == "health-check": cmd_health()
+    elif args.cmd == "xai-cost-report": cmd_xai_cost(args.days)
+    elif args.cmd == "xai-roi-report": cmd_xai_roi(args.days)
+    elif args.cmd == "alerts-self-test": cmd_alert_self_test()
+    elif args.cmd == "alerts": cmd_alerts(args.clear_resolved)
+    elif args.cmd == "radar": cmd_radar(args.refresh)
+    elif args.cmd == "quote-queue": cmd_quote_queue(args.today,args.pending)
+    elif args.cmd == "experiments": cmd_experiments(args.weekly)
+    elif args.cmd == "series-drafts": cmd_series_drafts(args.series_id)
 
 
 if __name__ == "__main__":

@@ -198,6 +198,12 @@ def _structure_spec(desired_type: str, renderer_key: str) -> str:
 def build_diagram_prompt(item, desired_type: str) -> str:
     renderer_key = _family(desired_type)
     spec = _structure_spec(desired_type, renderer_key)
+    teacher_context = ""
+    try:
+        from common.teacher_data import prompt_context
+        teacher_context = prompt_context(item.title)
+    except Exception:
+        pass
     return f"""あなたは金融SNS向けの図解デザイナー兼アナリストです。
 以下の金融ニュースを、指定された type の図解JSONに変換してください。
 
@@ -217,6 +223,7 @@ def build_diagram_prompt(item, desired_type: str) -> str:
 【厳守ルール】
 - 上記JSONだけを返す。Markdown（```）禁止、説明文・前置き・後置き一切禁止。JSONのみ。
 - ニュースに無い数字や事実は作らない。
+{teacher_context}
 """
 
 

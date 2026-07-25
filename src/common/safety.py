@@ -42,7 +42,10 @@ NG_WORDS: list[str] = [
 ]
 
 PROMPT_SAFETY_RULES = """
-- ニュースにない数字や事実は作らない"""
+- ニュースにない数字や事実は作らない
+- 詳しい解説が必要な複雑な事象では、130文字を超えてもよい。背景・因果・市場の注目点を省略せず、文章の完結を優先する
+- 文末まで書き切り、「…」で省略しない
+- 「】【」「【。」「】【。」など、壊れた括弧や不要な記号を出力しない"""
 
 
 def is_night_time_jst() -> bool:
@@ -61,12 +64,37 @@ def clean_text(text: str) -> str:
     return text
 
 
+def normalize_generated_post_text(text: str) -> str:
+    """生成文の内容を変えず、末尾に混入した明白な空括弧だけを除去する。"""
+    text = (text or "").strip()
+    # 例: 「企業開示】【。」→「企業開示。」
+    text = re.sub(r"】\s*【(?=\s*[。．.!！?？]*\s*$)", "", text)
+    return text.strip()
+
+
+def generated_post_quality_error(text: str) -> str:
+    """機械的に判定できる未完文・壊れた記号を返す。問題がなければ空文字。"""
+    value = (text or "").strip()
+    if not value:
+        return "投稿本文が空です"
+    if re.search(r"】\s*【\s*[。．.!！?？]*\s*$", value):
+        return "文末に壊れた括弧があります"
+    if value.endswith("...") or value.endswith(("…", "、", "，", ",", "：", ":", "；", ";", "・")):
+        return "文章が未完のまま終了しています"
+    if value.endswith(("【", "「", "『", "（", "(", "[", "{")):
+        return "文末に閉じていない括弧があります"
+    return ""
+
+
 def safety_check(text: str, platform: str = "x") -> None:
     """投稿前チェック。platform で上限を切替（X=280字 / Threads=500字）。
     Xは日本語が重み2のため、重み付き長も280以下であることを要求する。
     """
     if not text or not text.strip():
         raise ValueError("投稿本文が空です")
+    quality_error = generated_post_quality_error(text)
+    if quality_error:
+        raise ValueError(quality_error)
     max_chars, _ = platform_limits(platform)
     if len(text) > max_chars:
         raise ValueError(f"投稿本文が長すぎます（{platform}）: {len(text)}文字 > {max_chars}")
