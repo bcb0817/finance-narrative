@@ -192,8 +192,17 @@ class TwelveDataMarketProvider(TwelveDataProvider):
 def provider_status() -> dict[str, Any]:
     provider = TwelveDataMarketProvider()
     usage = usage_summary()
+    from common.data_governance import classify_provider, license_status
+    hard = float(os.getenv("TWELVEDATA_CREDIT_HARD_LIMIT_PERCENT", "95") or 95) / 100
+    state = classify_provider(
+        available=bool(provider.api_key),
+        authenticated=bool(provider.api_key),
+        budget_limited=float(usage.get("daily_ratio", 0) or 0) >= hard,
+    )
     return {
         "provider": "twelvedata",
+        "operational_state": state,
+        "license": license_status(),
         "api_key_configured": bool(provider.api_key),
         "rest_available": bool(provider.api_key),
         "websocket_status": "trial_only_not_used_in_production",

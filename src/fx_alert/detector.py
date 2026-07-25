@@ -51,7 +51,8 @@ def _returns(bars: list[FxBar]) -> list[float]:
 
 
 def _z_score(bars: list[FxBar], change_pct: float) -> float:
-    values = _returns(bars)
+    lookback = max(5, int(os.getenv("FX_VOLATILITY_LOOKBACK", "20") or 20))
+    values = _returns(bars)[-lookback:]
     if len(values) < 2:
         return 0.0
     deviation = statistics.pstdev(values)
@@ -70,6 +71,43 @@ def _major_level_crossed(start: float, end: float) -> bool:
     return math.floor(low) < math.floor(high) or math.floor(low * 2) < math.floor(high * 2)
 
 
+def _volatility_regime(bars: list[FxBar]) -> str:
+    lookback = max(5, int(os.getenv("FX_VOLATILITY_LOOKBACK", "20") or 20))
+    values = _returns(bars)[-lookback:]
+    if len(values) < lookback:
+        return "insufficient_data"
+    realized = statistics.pstdev(values)
+    if realized >= 0.20:
+        return "extreme"
+    if realized >= 0.10:
+        return "high"
+    if realized < 0.025:
+        return "low"
+    return "normal"
+
+
+def _hard_trigger(window: str, change_pct: float) -> bool:
+    defaults = {"5m": 0.80, "1h": 1.50, "24h": 2.50}
+    if window not in defaults:
+        return False
+    suffix = window.upper()
+    threshold = float(
+        os.getenv(f"FX_HARD_TRIGGER_{suffix}_PERCENT", str(defaults[window]))
+        or defaults[window]
+    )
+    return abs(change_pct) >= threshold
+
+
+def _multi_window_continuation(ordered: list[FxBar], latest: FxBar, direction: int) -> bool:
+    aligned = 0
+    for minutes in (5, 15, 60):
+        cutoff = latest.timestamp - timedelta(minutes=minutes)
+        prior = [item for item in ordered if item.timestamp <= cutoff]
+        if prior and (latest.close - prior[-1].close) * direction > 0:
+            aligned += 1
+    return aligned >= 2
+
+
 def detect_movements(
     bars: list[FxBar],
     *,
@@ -85,6 +123,10 @@ def detect_movements(
     thresholds = configured_thresholds()
     z_min = float(os.getenv("FX_Z_SCORE_MIN", "2.5") or 2.5)
     atr_min = float(os.getenv("FX_ATR_MULTIPLE_MIN", "1.5") or 1.5)
+    require_dynamic = os.getenv("FX_REQUIRE_DYNAMIC_CONFIRMATION", "true").lower() in {
+        "1", "true", "yes", "on",
+    }
+    regime = _volatility_regime(ordered)
     for window, threshold in thresholds.items():
         cutoff = latest.timestamp - timedelta(minutes=threshold.minutes)
         candidates = [item for item in ordered if item.timestamp <= cutoff]
@@ -104,14 +146,19 @@ def detect_movements(
             or latest.close < min(item.low for item in previous)
         )
         major_level = _major_level_crossed(start_bar.close, latest.close)
+        continuation = _multi_window_continuation(
+            ordered, latest, 1 if change_yen > 0 else -1
+        )
+        hard_triggered = _hard_trigger(window, change_pct)
         secondary = (
             z_score >= z_min
             or atr_multiple >= atr_min
             or important_event
             or breakout
             or major_level
+            or continuation
         )
-        if not secondary:
+        if require_dynamic and not secondary and not hard_triggered:
             continue
         triggers = [f"{window}_threshold"]
         if z_score >= z_min:
@@ -124,6 +171,10 @@ def detect_movements(
             triggers.append("breakout")
         if major_level:
             triggers.append("major_level")
+        if continuation:
+            triggers.append("multi_window_continuation")
+        if hard_triggered:
+            triggers.append("hard_trigger")
         raw_id = f"{pair_name}:{window}:{latest.timestamp.isoformat()}:{latest.close:.5f}"
         movement_id = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:16]
         results.append(
@@ -144,6 +195,16 @@ def detect_movements(
                 low=min(item.low for item in period),
                 data_source=latest.provider,
                 confirmed=True,
+                fixed_threshold_passed=True,
+                dynamic_confirmation_passed=secondary,
+                volatility_regime=regime,
+                hard_triggered=hard_triggered,
+                event_window=important_event,
+                alert_level=(
+                    "critical" if hard_triggered else
+                    "medium" if regime in {"high", "extreme"} and not important_event
+                    else "high"
+                ),
             )
         )
     return results

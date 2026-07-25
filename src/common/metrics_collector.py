@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import random
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -100,6 +101,19 @@ def missed_stages(age_hours: float, completed_stages: set[str]) -> list[str]:
     return result
 
 
+def late_catchup_stage(age_hours: float, completed_stages: set[str]) -> str | None:
+    """Return one recently expired stage for an explicitly labelled late recovery."""
+    grace = max(0.0, float(os.getenv("METRICS_LATE_CATCHUP_MINUTES", "180")) / 60.0)
+    if grace <= 0:
+        return None
+    candidates: list[tuple[float, str]] = []
+    for stage in ("1h", "6h", "24h"):
+        end = _deadline_hours(stage)
+        if end < age_hours <= end + grace and stage not in completed_stages:
+            candidates.append((end, stage))
+    return max(candidates, default=(0.0, None))[1]
+
+
 def _deadline_hours(stage: str) -> float:
     return float(os.getenv(WINDOW_ENV[stage][2], WINDOW_ENV[stage][3])) / 60.0
 
@@ -131,6 +145,13 @@ def enrich_metrics(raw: dict, posted_at: str, collected_at: datetime) -> dict:
     iph=(float(impressions)/age) if impressions is not None and age else None
     available=[v for v in (follow_conversion,profile_click_rate,repost_rate,iph) if v is not None]
     growth_score=(sum(available)/len(available)) if available else None
+    stage = str(raw.get("stage") or "")
+    deadline = _deadline_hours(stage) if stage in WINDOW_ENV else None
+    lateness_minutes = (
+        max(0.0, (age - deadline) * 60.0)
+        if age is not None and deadline is not None
+        else None
+    )
     return {
         **raw,
         "status":"collected",
@@ -146,6 +167,10 @@ def enrich_metrics(raw: dict, posted_at: str, collected_at: datetime) -> dict:
         "reply_rate":round(reply_rate,6) if reply_rate is not None else None,
         "like_rate":round(like_rate,6) if like_rate is not None else None,
         "growth_score":round(growth_score,6) if growth_score is not None else None,
+        "collection_timing": "late_catchup"
+        if lateness_minutes is not None and lateness_minutes > 0
+        else "within_window",
+        "lateness_minutes": round(lateness_minutes, 1) if lateness_minutes is not None else None,
         "engagement_rate": round(engagement / float(impressions), 6)
         if impressions not in (None, 0) else None,
         "metrics_collected_at": collected_at.isoformat(),
@@ -167,7 +192,7 @@ def _fetch_batch(client, ids: list[str], attempts: int = 3):
             logger.warning("X metrics fetch failed status=%s attempt=%s", code or "unknown", attempt + 1)
             if code == 429 or code is None or code >= 500:
                 if attempt + 1 < attempts:
-                    time.sleep(min(2 ** attempt, 4))
+                    time.sleep(min(2 ** attempt, 4) + random.uniform(0, 0.25))
                     continue
             raise
 
@@ -193,14 +218,16 @@ def collect_metrics(*, client=None, now: datetime | None = None) -> dict:
         if age < 0:
             continue
         done={s for t,s in completed if t==tid}
+        stage = due_stage(age, done) or late_catchup_stage(age, done)
         for missed in missed_stages(age,done):
+            if missed == stage:
+                continue
             row={"tweet_id":tid,"stage":missed,"status":"missed","reason":_missed_reason(now),
                  "expected_window_start_minutes":int(os.getenv(WINDOW_ENV[missed][0],WINDOW_ENV[missed][1])),
                  "expected_window_end_minutes":int(os.getenv(WINDOW_ENV[missed][2],WINDOW_ENV[missed][3])),
                  "metrics_collected_at":now.isoformat(),"post_age_hours":round(age,3)}
             if save_snapshot(row): completed.add((tid,missed))
         if age > max_age: continue
-        stage = due_stage(age, {s for t, s in completed if t == tid})
         if stage:
             due.append((post, stage))
     due.sort(key=lambda item: (

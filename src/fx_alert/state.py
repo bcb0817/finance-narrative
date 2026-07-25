@@ -31,14 +31,14 @@ def check_alert_gate(movement: FxMovement, *, now: datetime | None = None) -> Ga
     alerts = [row for row in state.get("alerts", []) if isinstance(row, dict)]
     if any(row.get("movement_id") == movement.movement_id for row in alerts):
         return GateDecision(False, "duplicate_movement")
-    today = current.astimezone().date()
     recent = []
     for row in alerts:
         when = _parse(str(row.get("timestamp", "")))
         if when:
             recent.append((row, when))
     daily_limit = int(os.getenv("FX_MAX_ALERTS_PER_DAY", os.getenv("FX_DAILY_POST_LIMIT", "6")) or 6)
-    if sum(1 for _, when in recent if when.astimezone().date() == today) >= daily_limit:
+    # Rolling 24 hours avoids a midnight boundary loophole and timezone-dependent tests.
+    if sum(1 for _, when in recent if timedelta(0) <= current - when < timedelta(hours=24)) >= daily_limit:
         return GateDecision(False, "daily_limit")
     if any(current - when < timedelta(hours=1) for _, when in recent):
         return GateDecision(False, "hourly_limit")

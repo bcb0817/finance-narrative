@@ -228,6 +228,7 @@ Inspection commands:
 .\.venv\Scripts\python.exe local_finance_bot.py radar-plan
 .\.venv\Scripts\python.exe local_finance_bot.py experiments --weekly
 .\.venv\Scripts\python.exe local_finance_bot.py metrics-status
+.\.venv\Scripts\python.exe local_finance_bot.py rss-status
 .\.venv\Scripts\python.exe local_finance_bot.py quote-queue --pending
 .\.venv\Scripts\python.exe local_finance_bot.py alerts
 .\.venv\Scripts\python.exe local_finance_bot.py xai-cost-report --days 30
@@ -317,6 +318,44 @@ DiscordとXには出ません。fixture通知だけは
 .\.venv\Scripts\python.exe local_finance_bot.py market-usage
 .\.venv\Scripts\python.exe local_finance_bot.py market-data-enable-status
 ```
+
+## Safety and observability controls
+
+Twelve Data publication rights default to `unknown`. Data collection, local
+analysis, metrics, reports, and explicitly internal Discord previews continue,
+but public X text and charts are blocked until a human verifies the contract
+and explicitly configures the granular publication flags.
+
+```powershell
+.\.venv\Scripts\python.exe local_finance_bot.py td-license-status
+.\.venv\Scripts\python.exe local_finance_bot.py td-license-checklist
+.\.venv\Scripts\python.exe local_finance_bot.py market-publication-status
+.\.venv\Scripts\python.exe local_finance_bot.py metrics-stage-status
+.\.venv\Scripts\python.exe local_finance_bot.py metrics-rolling --days 7
+.\.venv\Scripts\python.exe local_finance_bot.py xai-cost-breakdown
+.\.venv\Scripts\python.exe local_finance_bot.py shadow-report --days 7
+.\.venv\Scripts\python.exe local_finance_bot.py heartbeat-status
+.\.venv\Scripts\python.exe local_finance_bot.py runtime-manifest
+```
+
+External heartbeat integration is provider-neutral and disabled by default.
+If an operator supplies an HTTPS ping URL, set `EXTERNAL_HEARTBEAT_URL` and
+then set `EXTERNAL_HEARTBEAT_ENABLED=true`. The URL is treated as a secret;
+status output only shows a masked host. Heartbeat failures never stop the
+daemon.
+
+Twelve Data failures are isolated to market-data features:
+
+- `healthy`: normal monitoring
+- `degraded`: cache use, reduced polling, and an internal warning
+- `stale`: public posting is blocked; internal analysis only
+- `unavailable`: market-data features stop while News/Narrative continue
+- `auth_failed`: retries are limited and credentials are never logged
+- `budget_limited`: low-priority symbols and public posting stop
+- `license_blocked`: internal analysis continues; external display stops
+
+No unconfigured fallback provider is invented, and stale cache values are
+never published as current prices.
 
 監視対象は`config/market_watchlist.json`、検知・使用量・キャッシュは
 `data/market_data/`、チャートとメタデータは`outputs/market_charts/`に保存します。

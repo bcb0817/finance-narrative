@@ -98,13 +98,22 @@ def evaluate(
     if send_preview:
         notify_preview(movement, text)
     if dry_run:
+        from common.data_governance import publication_decision
+        rights = publication_decision(
+            surface="x", includes_chart=True, includes_numeric_data=True
+        )
         return {
             "status": "dry_run",
             "movement": movement.to_dict(),
             "text": text,
             "chart": str(image_path),
             "metadata": str(metadata_path),
-            "would_post": os.getenv("FX_POST_ENABLED", "false").strip().lower() in TRUE_VALUES,
+            "would_post": (
+                rights.allowed
+                and os.getenv("FX_POST_ENABLED", "false").strip().lower() in TRUE_VALUES
+                and os.getenv("POST_ENABLED", "false").strip().lower() in TRUE_VALUES
+            ),
+            "publication_rights": rights.to_dict(),
         }
     result = publish(movement, str(image_path))
     remember_alert(movement, status=result.status, tweet_id=result.tweet_id)

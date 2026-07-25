@@ -58,4 +58,23 @@ def classify_cross_asset(changes: dict[str, float], *, detected_at: datetime | N
         likely_interpretation=interpretation,
         alternative_interpretations=["個別材料", "流動性要因", "時差のある価格反映"],
         confidence=confidence,
+        observed_facts=[
+            f"{symbol} {value:+.2f}%"
+            for symbol, value in sorted(changes.items())
+        ],
+        inferred_interpretations=(
+            [interpretation] if confidence != "unknown" else []
+        ),
+        disconfirming_evidence=[
+            "価格の同時変動だけでは因果関係を確認できない"
+        ],
+        confirmation_sources=[],
+        causality_claim_allowed=False,
+        publication_language=(
+            f"{interpretation.rstrip('。')}。こうした動きが意識された可能性があります。"
+            if confidence == "likely"
+            else f"市場では{interpretation}との見方がありますが、確認は取れていません"
+            if confidence == "possible"
+            else "現時点で明確な材料は確認できていません"
+        ),
     )

@@ -1,6 +1,6 @@
 import unittest
 
-from news_bot.news import RSS_FEEDS, NewsItem, score_item
+from news_bot.news import RSS_FEEDS, NewsItem, diversify_ranked_items, score_item
 
 
 class RssConfigTests(unittest.TestCase):
@@ -38,6 +38,22 @@ class RssConfigTests(unittest.TestCase):
             priority=10,
         )
         self.assertGreater(score_item(monetary_policy), score_item(unrelated_policy))
+
+    def test_sec_is_regulatory_not_macro(self):
+        self.assertEqual(RSS_FEEDS["SEC Press Releases"]["group"], "official_regulatory")
+
+    def test_candidate_diversity_caps_publisher_family(self):
+        rows = [
+            NewsItem(f"CNBC {index}", f"https://example.com/cnbc/{index}", f"CNBC Feed {index}", "", priority=10)
+            for index in range(5)
+        ]
+        rows += [
+            NewsItem("Fed decision", "https://example.com/fed", "Fed Monetary Policy", "", priority=9),
+            NewsItem("BLS jobs", "https://example.com/bls", "BLS Latest Indicators", "", priority=9),
+        ]
+        selected = diversify_ranked_items(rows, limit=5, max_per_publisher=2)
+        self.assertEqual(sum(row.source.startswith("CNBC") for row in selected), 2)
+        self.assertIn("Fed Monetary Policy", {row.source for row in selected})
 
 
 if __name__ == "__main__":

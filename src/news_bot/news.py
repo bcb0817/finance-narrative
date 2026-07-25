@@ -4,6 +4,7 @@ import json
 import difflib
 import logging
 import random
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
@@ -58,7 +59,7 @@ RSS_FEEDS: dict[str, dict] = {
     "BEA":                    {"url": "https://apps.bea.gov/rss/rss.xml",                                 "group": "official_macro",  "priority": 8},
     "BLS Latest Indicators":  {"url": "https://www.bls.gov/feed/bls_latest.rss",                          "group": "official_macro",  "priority": 9},
     "EIA":                    {"url": "https://www.eia.gov/rss/todayinenergy.xml",                        "group": "official_macro",  "priority": 7},
-    "SEC Press Releases":     {"url": "https://www.sec.gov/news/pressreleases.rss",                       "group": "official_macro",  "priority": 8},
+    "SEC Press Releases":     {"url": "https://www.sec.gov/news/pressreleases.rss",                       "group": "official_regulatory", "priority": 8},
     # Policy-wide feed: keep as a primary source, but do not score unrelated
     # political/cultural announcements like monetary or economic statistics.
     "White House News":       {"url": "https://www.whitehouse.gov/news/feed/",                            "group": "official_policy", "priority": 4},
@@ -68,6 +69,7 @@ RSS_FEEDS: dict[str, dict] = {
 GROUP_SCORE: dict[str, float] = {
     "market_news":     0.0,
     "official_macro":  4.0,
+    "official_regulatory": 3.0,
     "official_policy": 0.0,
     "company_filings": 3.0,
 }
@@ -186,6 +188,88 @@ def _agent_for(url: str) -> str:
     return DEFAULT_AGENT
 
 
+def _rss_health_path() -> Path:
+    return Path(os.getenv("STATE_DIR", "data")) / "rss_health.json"
+
+
+def _load_rss_health() -> dict:
+    try:
+        value = json.loads(_rss_health_path().read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _record_rss_health(
+    name: str,
+    *,
+    status: str,
+    item_count: int,
+    http_status: int | None = None,
+    parse_warning: bool = False,
+    error_type: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Persist bounded per-feed health without storing response bodies or secrets."""
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    values = _load_rss_health()
+    previous = values.get(name, {}) if isinstance(values.get(name), dict) else {}
+    usable = status in {"ok", "degraded"} and item_count > 0
+    values[name] = {
+        "status": status,
+        "checked_at": current.isoformat(),
+        "last_success_at": current.isoformat() if usable else previous.get("last_success_at"),
+        "item_count": max(0, int(item_count)),
+        "http_status": http_status,
+        "parse_warning": bool(parse_warning),
+        "error_type": error_type,
+        "consecutive_failures": 0 if usable else int(previous.get("consecutive_failures", 0)) + 1,
+    }
+    path = _rss_health_path()
+    temporary = path.with_suffix(".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError as exc:
+        logger.warning("RSS health state write failed: %s", type(exc).__name__)
+
+
+def rss_status() -> dict:
+    health = _load_rss_health()
+    feeds = []
+    for name, cfg in RSS_FEEDS.items():
+        feeds.append({
+            "name": name,
+            "group": cfg["group"],
+            "priority": cfg["priority"],
+            **(health.get(name, {}) if isinstance(health.get(name), dict) else {
+                "status": "not_checked",
+                "checked_at": None,
+                "last_success_at": None,
+                "item_count": None,
+                "http_status": None,
+                "parse_warning": None,
+                "error_type": None,
+                "consecutive_failures": 0,
+            }),
+        })
+    counts: dict[str, int] = {}
+    for row in feeds:
+        state = str(row["status"])
+        counts[state] = counts.get(state, 0) + 1
+    return {
+        "feed_count": len(feeds),
+        "usable_count": sum(
+            row["status"] in {"ok", "degraded"} and int(row.get("item_count") or 0) > 0
+            for row in feeds
+        ),
+        "status_counts": counts,
+        "total_items_last_check": sum(int(row.get("item_count") or 0) for row in feeds),
+        "feeds": feeds,
+    }
+
+
 def fetch_feed(name: str, cfg: dict) -> list[NewsItem]:
     """1つのRSSフィードからニュースを取得する。失敗してもBot全体は止めない。"""
     items: list[NewsItem] = []
@@ -223,10 +307,24 @@ def fetch_feed(name: str, cfg: dict) -> list[NewsItem]:
             ))
 
         logger.info(f"{name} [{group}]: {len(items)}件取得")
+        parse_warning = bool(parsed.bozo)
+        _record_rss_health(
+            name,
+            status="degraded" if parse_warning or not items else "ok",
+            item_count=len(items),
+            http_status=getattr(parsed, "status", None),
+            parse_warning=parse_warning,
+        )
 
     except Exception as e:
         # 1フィードの失敗は warning に留め、全体は継続する
         logger.warning(f"{name} [{group}] の取得に失敗しました（スキップ）: {e}")
+        _record_rss_health(
+            name,
+            status="failed",
+            item_count=0,
+            error_type=type(e).__name__,
+        )
 
     return items
 
@@ -293,6 +391,34 @@ def score_item(item: NewsItem) -> float:
     if any(k in text for k in PRIORITY_THEME_KEYWORDS):
         score += PRIORITY_THEME_BONUS
     return score
+
+
+def diversify_ranked_items(
+    items: list[NewsItem],
+    *,
+    limit: int,
+    max_per_publisher: int | None = None,
+) -> list[NewsItem]:
+    """Keep one publisher family from monopolizing the review candidate list."""
+    cap = max_per_publisher
+    if cap is None:
+        try:
+            cap = int(os.getenv("RSS_MAX_CANDIDATES_PER_PUBLISHER", "3"))
+        except ValueError:
+            cap = 3
+    if cap <= 0:
+        return items[:limit]
+    selected: list[NewsItem] = []
+    counts: dict[str, int] = {}
+    for item in items:
+        family = item.source.split(maxsplit=1)[0].lower()
+        if counts.get(family, 0) >= cap:
+            continue
+        selected.append(item)
+        counts[family] = counts.get(family, 0) + 1
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def select_best_item(
@@ -366,7 +492,10 @@ def fetch_news_candidates(
         logger.warning("24時間以内の未投稿ニュースなし。全未投稿件から選択します")
         recent = available
 
-    ranked = sorted(recent, key=score_item, reverse=True)[:limit]
+    ranked = diversify_ranked_items(
+        sorted(recent, key=score_item, reverse=True),
+        limit=limit,
+    )
     for it in ranked[:3]:
         logger.info(f"候補: [{it.source}] prio={it.priority} {it.title[:60]}")
     return ranked

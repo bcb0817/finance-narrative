@@ -30,11 +30,26 @@ def run_daily_report(days: int = 1) -> dict:
     from common.operations_alerts import write_alerts
     from common.ops_quality import write_roi_report
     from common.report import build_report
+    from common.metrics_quality import stage_status
+    from common.data_governance import license_status
+    from common.external_heartbeat import status as heartbeat_status
+    from common.runtime_manifest import runtime_status
+    from common.xai_quality import cost_breakdown
+    from market_data.shadow import report as shadow_report
+    from market_data.provider import provider_status
     tasks=[
+        _run("runtime_health", runtime_status),
+        _run("git_runtime_manifest", runtime_status),
         _run("daily_log_analysis",analyze_daily_logs),
         _run("performance_report",lambda:build_report(days=days)),
+        _run("metrics_quality", lambda: stage_status(days=7)),
+        _run("multi_asset_shadow", lambda: shadow_report(days=7)),
+        _run("provider_health", provider_status),
+        _run("data_license_status", license_status),
+        _run("external_heartbeat", heartbeat_status),
         _run("operations_alerts",write_alerts),
         _run("xai_roi",lambda:write_roi_report(30)),
+        _run("xai_cost_attribution", lambda: cost_breakdown(30)),
     ]
     successful=[task for task in tasks if task["status"] in {"success","data_insufficient","skipped"}]
     failed=[task for task in tasks if task["status"]=="failed"]

@@ -9,6 +9,7 @@ from PIL import Image
 from common.openai_client import review_tweet_with_openai
 from common.post_registry import record_post
 from common.x_client import post_tweet_with_image
+from common.data_governance import publication_decision
 
 from .models import FxMovement
 
@@ -45,6 +46,11 @@ def build_post(movement: FxMovement, *, style: str = "fx_breaking") -> str:
 
 def publish(movement: FxMovement, image_path: str, *, style: str = "fx_breaking") -> PostResult:
     text = build_post(movement, style=style)
+    rights = publication_decision(
+        surface="x", includes_chart=True, includes_numeric_data=True
+    )
+    if not rights.allowed:
+        return PostResult("license_blocked", text, reason=rights.reason)
     if not text or len(text) > 280 or text[-1] not in "。！？!?":
         return PostResult("content_blocked", text, reason="incomplete or invalid post text")
     if any(word in text for word in ("必ず", "確実", "買うべき", "売るべき")):

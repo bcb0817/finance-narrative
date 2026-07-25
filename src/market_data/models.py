@@ -132,6 +132,12 @@ class CrossAssetSignal:
     source_confirmation_status: str = "unknown"
     radar_influenced: bool = False
     recommended_post_type: str = "cross_asset_explanation"
+    observed_facts: list[str] = field(default_factory=list)
+    inferred_interpretations: list[str] = field(default_factory=list)
+    disconfirming_evidence: list[str] = field(default_factory=list)
+    confirmation_sources: list[str] = field(default_factory=list)
+    causality_claim_allowed: bool = False
+    publication_language: str = "現時点で明確な材料は確認できていません"
 
     def to_dict(self) -> dict[str, Any]:
         row = asdict(self)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from common.openai_client import review_tweet_with_openai
 from common.post_registry import record_post
 from common.x_client import post_tweet_with_image
+from common.data_governance import publication_decision
 
 from .models import CrossAssetSignal, MarketMovement
 from .symbols import symbol_config
@@ -23,7 +24,10 @@ class MarketPostResult:
 
 
 def external_display_approved() -> bool:
-    return os.getenv("TWELVEDATA_EXTERNAL_DISPLAY_APPROVED", "false").lower() in TRUE_VALUES
+    decision = publication_decision(
+        surface="x", includes_chart=True, includes_numeric_data=True
+    )
+    return decision.allowed
 
 
 def market_post_enabled() -> bool:
@@ -81,7 +85,7 @@ def build_market_post(movement: MarketMovement, *, post_type: str | None = None)
     return f"{lead}\n{fact}\n{delayed}{context}\n{source}"[:280]
 
 
-def build_cross_asset_post(signal: CrossAssetSignal) -> str:
+def _legacy_build_cross_asset_post(signal: CrossAssetSignal) -> str:
     changes = "、".join(f"{key} {value:+.2f}%" for key, value in signal.movements.items())
     return (
         f"【クロスアセット】{signal.pattern_type}\n{changes}\n"
@@ -89,10 +93,24 @@ def build_cross_asset_post(signal: CrossAssetSignal) -> str:
     )[:280]
 
 
+def build_cross_asset_post(signal: CrossAssetSignal) -> str:
+    changes = "、".join(
+        f"{key} {value:+.2f}%" for key, value in signal.movements.items()
+    )
+    return (
+        f"【クロスアセット】{signal.pattern_type}\n{changes}\n"
+        f"{signal.publication_language}\n"
+        "相関は因果関係を意味しません。"
+    )[:280]
+
+
 def publish_market(movement: MarketMovement, image_path: str) -> MarketPostResult:
     text = build_market_post(movement)
-    if not external_display_approved():
-        return MarketPostResult("license_blocked", text, reason="TWELVEDATA_EXTERNAL_DISPLAY_APPROVED=false")
+    rights = publication_decision(
+        surface="x", includes_chart=True, includes_numeric_data=True
+    )
+    if not rights.allowed:
+        return MarketPostResult("license_blocked", text, reason=rights.reason)
     if not symbol_external_display_allowed(movement.symbol):
         return MarketPostResult("symbol_license_blocked", text, reason="external_display_allowed=false")
     if not market_post_enabled():

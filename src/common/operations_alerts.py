@@ -203,6 +203,22 @@ def _discord_message(new_rows: list[dict], resolved_count: int, now: datetime) -
     return "\n".join(lines)[:1900]
 
 
+def _allowlist_alert(row: dict) -> dict:
+    """Only explicitly approved operational fields may reach Discord."""
+    return {
+        "code": redact_discord_text(row.get("code") or "unknown")[:120],
+        "severity": redact_discord_text(row.get("severity") or "unknown")[:20],
+        "bot": redact_discord_text(row.get("bot") or row.get("component") or "")[:80],
+        "detail": redact_discord_text(
+            row.get("safe_message") or row.get("detail") or ""
+        )[:500],
+        "error_type": redact_discord_text(row.get("error_type") or "")[:80],
+        "first_seen": redact_discord_text(row.get("first_seen") or "")[:80],
+        "last_seen": redact_discord_text(row.get("last_seen") or "")[:80],
+        "resolved": bool(row.get("resolved", False)),
+    }
+
+
 def redact_discord_text(value: object) -> str:
     """Remove common credentials before any content leaves the machine."""
     text=str(value)
@@ -368,7 +384,8 @@ def send_discord_alerts(rows: list[dict], *, now: datetime | None=None,
     state_path=_discord_state_path()
     previous=_read_json(state_path,{})
     previous_keys=set(previous.get("active_keys",[]))
-    current_by_key={_alert_key(row):row for row in rows}
+    safe_rows=[_allowlist_alert(row) for row in rows]
+    current_by_key={_alert_key(row):row for row in safe_rows}
     current_keys=set(current_by_key)
     new_keys=current_keys-previous_keys
     resolved_keys=previous_keys-current_keys

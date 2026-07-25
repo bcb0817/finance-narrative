@@ -22,6 +22,7 @@ from .models import MarketBar
 from .models import MarketMovement
 from .notifications import notify_market_preview
 from .posts import build_market_post, external_display_approved, market_post_enabled, publish_market
+from .shadow import create_candidate
 from .provider import MarketDataUnavailable, TwelveDataMarketProvider, provider_status
 from .state import check_gate, remember
 from .storage import append_jsonl, cleanup, load_state, save_state, usage_summary
@@ -86,7 +87,11 @@ def _quality(bars: list[MarketBar], *, now: datetime | None = None) -> tuple[str
     suspicious_limit = 50.0 if bars[-1].symbol in {"BTC/USD", "ETH/USD"} else 25.0
     if one_minute_changes and max(one_minute_changes) > suspicious_limit:
         return "suspicious", age
-    maximum = int(os.getenv("MARKET_DATA_STALE_SECONDS", "300") or 300)
+    symbol = bars[-1].symbol
+    if symbol in {"BTC/USD", "ETH/USD"}:
+        maximum = int(os.getenv("CRYPTO_DATA_MAX_AGE_SECONDS", "120") or 120)
+    else:
+        maximum = int(os.getenv("EQUITY_DATA_MAX_AGE_SECONDS", "180") or 180)
     if age > maximum:
         return ("delayed" if age < 86400 else "rejected"), age
     return "good", age
@@ -140,6 +145,19 @@ def evaluate_bars(
         "fixture_results.jsonl" if fixture else "movements.jsonl",
         movement.to_dict(),
     )
+    shadow = None
+    if not fixture:
+        shadow = create_candidate(
+            movement,
+            chart_path=str(chart),
+            draft_text=text,
+            rights_passed=external_display_approved(),
+            blocked_reason=(
+                "market_post_disabled" if not market_post_enabled()
+                else "license_blocked" if not external_display_approved()
+                else "shadow_observation"
+            ),
+        )
     if send_preview:
         notify_market_preview(
             movement, text, fixture=fixture,
@@ -156,6 +174,7 @@ def evaluate_bars(
                 and os.getenv("POST_ENABLED", "false").lower() in TRUE_VALUES
             ),
             "external_display_approved": external_display_approved(),
+            "shadow_candidate": shadow,
         }
     result = publish_market(movement, str(chart))
     remember(movement, status=result.status, tweet_id=result.tweet_id)
@@ -168,6 +187,7 @@ def evaluate_bars(
         "status": result.status, "movement": movement.to_dict(),
         "text": result.text, "chart": str(chart),
         "reason": result.reason, "tweet_id": result.tweet_id,
+        "shadow_candidate": shadow,
     }
 
 

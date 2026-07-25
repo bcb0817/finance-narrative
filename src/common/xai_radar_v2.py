@@ -300,10 +300,19 @@ def _usage(response: Any) -> dict:
     tools = int(getattr(usage, "num_server_side_tools_used", 0) or getattr(usage, "tool_calls", 0) or 0)
     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    details = getattr(usage, "input_tokens_details", None)
+    cached_input_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+    output_details = getattr(usage, "output_tokens_details", None)
+    reasoning_tokens = int(getattr(output_details, "reasoning_tokens", 0) or 0)
     estimate = tools * _env_float("XAI_SEARCH_TOOL_COST", 0.005)
     return {
         "tool_calls": tools,
+        "attempted_tool_calls": tools,
+        "successful_tool_calls": tools,
+        "x_search_calls": tools,
         "input_tokens": input_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "reasoning_tokens": reasoning_tokens,
         "output_tokens": output_tokens,
         "estimated_cost_usd": round(estimate, 6) if not ticks else 0.0,
         "reported_cost_usd": ticks / 1e10 if ticks else None,
@@ -357,12 +366,21 @@ def refresh(*, client: Any = None, now: datetime | None = None, force: bool = Fa
             _append(_path("topic_radar.jsonl"), {"timestamp": current.isoformat(), **topic})
         row = {"timestamp": current.isoformat(), "run_id": run_id, "model": model, "operation": "x_topic_radar",
                "status": "success", "success": True, "topic_count": len(topics),
+               "request_id": str(getattr(response, "id", "") or ""),
+               "topics_returned": len(topics),
+               "useful_topics": sum(bool(topic.get("primary_source_available")) for topic in topics),
+               "news_candidates_created": 0, "posts_created": 0, "post_ids": [],
+               "cache_hit": False, "failure_stage": None, "error_type": None,
                "latency_ms": round((time.perf_counter() - started) * 1000), **usage}
         _append(_path("api_usage.jsonl"), row)
         return {"status": "ok", "run_id": run_id, "topics": topics, "usage": row}
     except Exception as exc:
         row = {"timestamp": current.isoformat(), "run_id": run_id, "model": model, "operation": "x_topic_radar",
                "status": "failed", "success": False, "error_type": type(exc).__name__,
+               "request_id": str(getattr(response, "id", "") or ""),
+               "topics_returned": 0, "useful_topics": 0,
+               "news_candidates_created": 0, "posts_created": 0, "post_ids": [],
+               "cache_hit": False, "failure_stage": "request_or_parse",
                "latency_ms": round((time.perf_counter() - started) * 1000), **_usage(response)}
         _append(_path("api_usage.jsonl"), row)
         return {"status": "fallback", "reason": type(exc).__name__, "topics": list(_cache().get("topics") or [])}

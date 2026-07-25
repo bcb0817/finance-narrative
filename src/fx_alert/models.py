@@ -118,6 +118,13 @@ class FxMovement:
     data_source: str = ""
     confirmed: bool = False
     alert_level: str = "high"
+    fixed_threshold_passed: bool = True
+    dynamic_confirmation_passed: bool = True
+    volatility_regime: str = "normal"
+    hard_triggered: bool = False
+    event_window: bool = False
+    threshold_version: str = "v2_dynamic_2026_07"
+    rejection_reason: str = ""
 
     def __post_init__(self) -> None:
         self.pair = normalize_pair(self.pair)
@@ -151,4 +158,5 @@ class FxMovement:
     def from_dict(cls, data: dict[str, Any]) -> "FxMovement":
         values = dict(data)
         values["detected_at"] = datetime.fromisoformat(str(values["detected_at"]))
-        return cls(**values)
+        allowed = set(cls.__dataclass_fields__)
+        return cls(**{key: value for key, value in values.items() if key in allowed})

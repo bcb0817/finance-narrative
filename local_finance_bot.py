@@ -538,6 +538,20 @@ def cmd_status() -> None:
             print(f"last heartbeat : {hb.get('updated_at', '-')} status={hb.get('status', '-')}")
         except (json.JSONDecodeError, OSError):
             print(f"last heartbeat : unreadable ({heartbeat})")
+    try:
+        from common.runtime_manifest import runtime_status
+        from common.data_governance import license_status
+        from common.external_heartbeat import status as external_heartbeat_status
+        from common.metrics_quality import stage_status
+        from market_data.shadow import report as shadow_report
+        from common.json_utils import make_json_safe
+        print("RUNTIME      : " + json.dumps(make_json_safe(runtime_status()), ensure_ascii=False))
+        print("TD LICENSE   : " + json.dumps(make_json_safe(license_status()), ensure_ascii=False))
+        print("METRICS 7D   : " + json.dumps(make_json_safe(stage_status(days=7)), ensure_ascii=False))
+        print("SHADOW 7D    : " + json.dumps(make_json_safe(shadow_report(days=7)), ensure_ascii=False))
+        print("EXT HEARTBEAT: " + json.dumps(make_json_safe(external_heartbeat_status()), ensure_ascii=False))
+    except Exception as exc:
+        print(f"EXTENDED STATUS: unavailable ({type(exc).__name__})")
 
 
 def cmd_init_state() -> None:
@@ -957,6 +971,76 @@ def cmd_report(days: int = 1) -> dict:
     return result
 
 
+def _print_json(value) -> None:
+    from common.json_utils import make_json_safe
+    print(json.dumps(make_json_safe(value), ensure_ascii=False, indent=2))
+
+
+def cmd_td_license_status() -> None:
+    from common.data_governance import license_status
+    _print_json(license_status())
+
+
+def cmd_td_license_checklist() -> None:
+    from common.data_governance import license_checklist
+    _print_json(license_checklist())
+
+
+def cmd_market_publication_status() -> None:
+    from common.data_governance import market_publication_status
+    _print_json(market_publication_status())
+
+
+def cmd_rss_status() -> None:
+    from news_bot.news import rss_status
+    _print_json(rss_status())
+
+
+def cmd_metrics_quality(command: str, *, days: int = 7) -> None:
+    from common.metrics_quality import missed_items, stage_status
+    value = missed_items() if command == "metrics-missed" else stage_status(days=days)
+    if command == "metrics-next-due":
+        value = {"next_due": value["next_due"], "oldest_pending": value["oldest_pending"]}
+    _print_json(value)
+
+
+def cmd_xai_quality(command: str, *, days: int = 30) -> None:
+    from common.xai_quality import cost_breakdown, funnel
+    from common.xai_radar_v2 import cache_status
+    if command == "xai-funnel":
+        value = funnel(days)
+    elif command == "xai-cache-status":
+        value = cache_status(days)
+    else:
+        value = cost_breakdown(days)
+    _print_json(value)
+
+
+def cmd_shadow(command: str, candidate_id: str = "", reason: str = "", days: int = 7) -> None:
+    from market_data.shadow import list_candidates, report, review, show
+    if command == "shadow-list":
+        value = list_candidates(days=days)
+    elif command == "shadow-show":
+        value = show(candidate_id) or {"status": "not_found", "candidate_id": candidate_id}
+    elif command == "shadow-approve":
+        value = review(candidate_id, "approved", reason)
+    elif command == "shadow-reject":
+        value = review(candidate_id, "rejected", reason)
+    else:
+        value = report(days=days)
+    _print_json(value)
+
+
+def cmd_external_heartbeat(command: str) -> None:
+    from common.external_heartbeat import publish, status
+    _print_json(publish(dry_run=True) if command == "heartbeat-test" else status())
+
+
+def cmd_runtime_manifest(write: bool = False) -> None:
+    from common.runtime_manifest import runtime_status, write_manifest
+    _print_json(write_manifest() if write else runtime_status())
+
+
 def cmd_daemon() -> None:
     sched = load_schedule()
     window = int(os.environ.get("RUN_WINDOW_MINUTES", "10") or 10)
@@ -979,6 +1063,11 @@ def cmd_daemon() -> None:
         pass
 
     print(f"[daemon] 起動 POST_ENABLED={post_enabled()} window={window}min catch_up={catch_up}")
+    try:
+        from common.runtime_manifest import write_manifest
+        write_manifest()
+    except Exception as exc:
+        print(f"[WARN] runtime manifest unavailable: {type(exc).__name__}")
     _write_heartbeat(status="started")
     try:
         while not stop["flag"]:
@@ -1006,6 +1095,11 @@ def cmd_daemon() -> None:
                     break
                 time.sleep(min(remain, 30))
                 _write_heartbeat(status="waiting", next_bot=next_label, next_run=nxt)
+                try:
+                    from common.external_heartbeat import publish
+                    publish()
+                except Exception as exc:
+                    print(f"[WARN] external heartbeat continued after {type(exc).__name__}")
             if stop["flag"]:
                 break
 
@@ -1080,7 +1174,14 @@ def main() -> None:
     batch_cancel.add_argument("batch_id")
     sub.add_parser("config-status", help="Feature flags and effective configuration")
     sub.add_parser("radar-plan", help="Today's xAI priority-window allocation")
+    sub.add_parser("rss-status", help="Per-feed RSS health without fetching or posting")
     sub.add_parser("metrics-status", help="Metrics collection status")
+    sub.add_parser("metrics-stage-status", help="Stage-level metrics status")
+    sub.add_parser("metrics-missed", help="Classified missed metrics")
+    sub.add_parser("metrics-next-due", help="Next metrics deadlines")
+    for command in ("metrics-rolling",):
+        metrics_rolling = sub.add_parser(command, help="Rolling metrics success")
+        metrics_rolling.add_argument("--days", type=int, choices=[7, 30], default=7)
     sub.add_parser("health-check", help="Windows local daemon and data-quality health")
     sub.add_parser("fx-status", help="FX Alertの設定・実行状態")
     fx_provider = sub.add_parser("fx-provider-status", help="FXデータプロバイダー状態")
@@ -1102,6 +1203,9 @@ def main() -> None:
     td_capabilities.add_argument("--refresh", action="store_true")
     td_provider = sub.add_parser("td-provider-status", help="Twelve Data provider status")
     td_provider.add_argument("--probe", action="store_true")
+    sub.add_parser("td-license-status", help="Unified Twelve Data display rights")
+    sub.add_parser("td-license-checklist", help="Human contract review checklist")
+    sub.add_parser("market-publication-status", help="Publication gates by surface")
     sub.add_parser("market-data-status", help="Multi-asset monitor status")
     sub.add_parser("market-watchlist", help="Configured multi-asset watchlist")
     market_check = sub.add_parser("market-check", help="Safely inspect one market symbol")
@@ -1118,6 +1222,25 @@ def main() -> None:
     xcost.add_argument("--days",type=int,default=30)
     xroi=sub.add_parser("xai-roi-report", help="xAI influence and ROI report")
     xroi.add_argument("--days",type=int,default=30)
+    for command in ("xai-roi", "xai-funnel", "xai-cost-breakdown", "xai-cache-status"):
+        parser = sub.add_parser(command)
+        parser.add_argument("--days", type=int, default=30)
+    shadow_list = sub.add_parser("shadow-list")
+    shadow_list.add_argument("--days", type=int, default=30)
+    shadow_show = sub.add_parser("shadow-show")
+    shadow_show.add_argument("candidate_id")
+    shadow_approve = sub.add_parser("shadow-approve")
+    shadow_approve.add_argument("candidate_id")
+    shadow_reject = sub.add_parser("shadow-reject")
+    shadow_reject.add_argument("candidate_id")
+    shadow_reject.add_argument("--reason", required=True)
+    shadow_report_parser = sub.add_parser("shadow-report")
+    shadow_report_parser.add_argument("--days", type=int, default=7)
+    sub.add_parser("heartbeat-status")
+    heartbeat_test = sub.add_parser("heartbeat-test")
+    heartbeat_test.add_argument("--dry-run", action="store_true", required=True)
+    runtime_manifest = sub.add_parser("runtime-manifest")
+    runtime_manifest.add_argument("--write", action="store_true")
     sub.add_parser("alerts-self-test",help="Test alert writes without touching production files")
     alerts=sub.add_parser("alerts", help="Local operational alerts")
     alerts.add_argument("--clear-resolved",action="store_true")
@@ -1154,11 +1277,15 @@ def main() -> None:
     elif args.cmd == "ai-batch-submit": cmd_ai_batch_submit(args.input, args.operation)
     elif args.cmd == "ai-batch-cancel": cmd_ai_batch_cancel(args.batch_id)
     elif args.cmd == "xai-status": cmd_xai_status()
+    elif args.cmd == "rss-status": cmd_rss_status()
     elif args.cmd == "xai-smoke":
         print("[xai-smoke] config-only dry-run（検索・投稿なし）"); cmd_xai_status()
     elif args.cmd == "config-status": cmd_config_status()
     elif args.cmd == "radar-plan": cmd_radar_plan()
     elif args.cmd == "metrics-status": cmd_metrics_status()
+    elif args.cmd in ("metrics-stage-status", "metrics-missed", "metrics-next-due"):
+        cmd_metrics_quality(args.cmd)
+    elif args.cmd == "metrics-rolling": cmd_metrics_quality(args.cmd, days=args.days)
     elif args.cmd == "health-check": cmd_health()
     elif args.cmd == "fx-status": cmd_fx_status()
     elif args.cmd == "fx-provider-status": cmd_fx_provider_status(args.probe)
@@ -1170,6 +1297,9 @@ def main() -> None:
     elif args.cmd == "fx-enable-status": cmd_fx_status()
     elif args.cmd == "td-capabilities": cmd_td_capabilities(args.refresh)
     elif args.cmd == "td-provider-status": cmd_td_provider_status(args.probe)
+    elif args.cmd == "td-license-status": cmd_td_license_status()
+    elif args.cmd == "td-license-checklist": cmd_td_license_checklist()
+    elif args.cmd == "market-publication-status": cmd_market_publication_status()
     elif args.cmd in ("market-data-status", "market-data-enable-status"): cmd_market_data_status()
     elif args.cmd == "market-watchlist": cmd_market_watchlist()
     elif args.cmd == "market-check": cmd_market_check(args.symbol)
@@ -1181,6 +1311,19 @@ def main() -> None:
     elif args.cmd == "market-usage": cmd_market_usage()
     elif args.cmd == "xai-cost-report": cmd_xai_cost(args.days)
     elif args.cmd == "xai-roi-report": cmd_xai_roi(args.days)
+    elif args.cmd in ("xai-roi", "xai-funnel", "xai-cost-breakdown", "xai-cache-status"):
+        cmd_xai_quality(args.cmd, days=args.days)
+    elif args.cmd in ("shadow-list", "shadow-show", "shadow-approve", "shadow-reject", "shadow-report"):
+        cmd_shadow(
+            args.cmd,
+            candidate_id=getattr(args, "candidate_id", ""),
+            reason=getattr(args, "reason", ""),
+            days=getattr(args, "days", 7),
+        )
+    elif args.cmd in ("heartbeat-status", "heartbeat-test"):
+        cmd_external_heartbeat(args.cmd)
+    elif args.cmd == "runtime-manifest":
+        cmd_runtime_manifest(args.write)
     elif args.cmd == "alerts-self-test": cmd_alert_self_test()
     elif args.cmd == "alerts": cmd_alerts(args.clear_resolved)
     elif args.cmd == "radar": cmd_radar(args.refresh)
