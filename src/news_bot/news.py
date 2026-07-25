@@ -9,8 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Optional
-import urllib.request
-import urllib.error
+import requests
 
 try:
     import feedparser
@@ -52,6 +51,31 @@ RSS_FEEDS: dict[str, dict] = {
     "CNBC Earnings":          {"url": "https://www.cnbc.com/id/15839135/device/rss/rss.html",             "group": "market_news",     "priority": 6},
     "Investing.com":          {"url": "https://www.investing.com/rss/news.rss",                           "group": "market_news",     "priority": 4},
     "Seeking Alpha Currents": {"url": "https://seekingalpha.com/market_currents.xml",                     "group": "market_news",     "priority": 5},
+    "WSJ Markets":            {"url": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",                    "group": "market_news",     "priority": 8},
+    "Financial Times Markets":{"url": "https://www.ft.com/markets?format=rss",                            "group": "market_news",     "priority": 8},
+    "NYT Business":           {"url": "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml",        "group": "market_news",     "priority": 6},
+    "Fortune":                {"url": "https://fortune.com/feed/",                                        "group": "market_news",     "priority": 7},
+    "TechCrunch AI": {
+        "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+        "group": "sector_news",
+        "priority": 6,
+        "include_keywords": [
+            "nvidia", "amd", "intel", "microsoft", "google", "alphabet",
+            "amazon", "meta", "apple", "tesla", "openai", "anthropic",
+            "chip", "semiconductor", "data center", "stock", "shares",
+            "earnings", "revenue", "ipo", "acquisition",
+        ],
+    },
+    "CoinDesk": {
+        "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "group": "crypto_news",
+        "priority": 6,
+        "include_keywords": [
+            "bitcoin", "btc", "ether", "ethereum", "crypto", "stablecoin",
+            "coinbase", "sec", "etf", "market", "price", "fed",
+            "regulation", "treasury", "token",
+        ],
+    },
 
     # --- 2. official_macro（公式マクロ：高めの priority） ---
     "Fed Monetary Policy":    {"url": "https://www.federalreserve.gov/feeds/press_monetary.xml",          "group": "official_macro",  "priority": 10},
@@ -72,6 +96,8 @@ GROUP_SCORE: dict[str, float] = {
     "official_regulatory": 3.0,
     "official_policy": 0.0,
     "company_filings": 3.0,
+    "sector_news": 1.0,
+    "crypto_news": 0.5,
 }
 
 
@@ -189,7 +215,11 @@ def _agent_for(url: str) -> str:
 
 
 def _rss_health_path() -> Path:
-    return Path(os.getenv("STATE_DIR", "data")) / "rss_health.json"
+    try:
+        from common.runtime import state_dir as shared_state_dir
+    except ImportError:
+        from runtime import state_dir as shared_state_dir
+    return shared_state_dir() / "rss_health.json"
 
 
 def _load_rss_health() -> dict:
@@ -270,6 +300,52 @@ def rss_status() -> dict:
     }
 
 
+def matches_feed_filter(title: str, cfg: dict) -> bool:
+    required = [
+        str(value).strip().lower()
+        for value in cfg.get("include_keywords", [])
+        if str(value).strip()
+    ]
+    if not required:
+        return True
+    lowered = title.lower()
+    return any(keyword in lowered for keyword in required)
+
+
+def _download_feed(url: str, agent: str) -> tuple[bytes, int | None]:
+    """Download one bounded RSS payload so a slow feed cannot stall the bot."""
+    try:
+        timeout = max(1.0, float(os.getenv("RSS_FETCH_TIMEOUT_SECONDS", "12")))
+    except ValueError:
+        timeout = 12.0
+    try:
+        max_bytes = max(64_000, int(os.getenv("RSS_MAX_RESPONSE_BYTES", "2000000")))
+    except ValueError:
+        max_bytes = 2_000_000
+    connect_timeout = min(5.0, timeout)
+    with requests.get(
+        url,
+        headers={
+            "User-Agent": agent,
+            "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.5",
+        },
+        timeout=(connect_timeout, timeout),
+        stream=True,
+        allow_redirects=True,
+    ) as response:
+        response.raise_for_status()
+        chunks: list[bytes] = []
+        size = 0
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            size += len(chunk)
+            if size > max_bytes:
+                raise ValueError("rss_response_too_large")
+            chunks.append(chunk)
+        return b"".join(chunks), response.status_code
+
+
 def fetch_feed(name: str, cfg: dict) -> list[NewsItem]:
     """1つのRSSフィードからニュースを取得する。失敗してもBot全体は止めない。"""
     items: list[NewsItem] = []
@@ -279,7 +355,8 @@ def fetch_feed(name: str, cfg: dict) -> list[NewsItem]:
 
     try:
         logger.info(f"{name} [{group}] prio={priority} を取得中")
-        parsed = feedparser.parse(url, agent=_agent_for(url))
+        payload, http_status = _download_feed(url, _agent_for(url))
+        parsed = feedparser.parse(payload)
 
         if parsed.bozo:
             logger.warning(f"{name} [{group}]: フィードの解析に問題があります（部分取得を試行）")
@@ -290,6 +367,9 @@ def fetch_feed(name: str, cfg: dict) -> list[NewsItem]:
             published = entry.get("published", "") or entry.get("updated", "")
 
             if not title or not link:
+                continue
+            if not matches_feed_filter(title, cfg):
+                logger.info(f"媒体別フィルター除外: {name} :: {title[:60]}")
                 continue
 
             excluded, ex_reason = is_excluded(title, group)
@@ -312,7 +392,7 @@ def fetch_feed(name: str, cfg: dict) -> list[NewsItem]:
             name,
             status="degraded" if parse_warning or not items else "ok",
             item_count=len(items),
-            http_status=getattr(parsed, "status", None),
+            http_status=http_status,
             parse_warning=parse_warning,
         )
 

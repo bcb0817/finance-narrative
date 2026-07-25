@@ -1,6 +1,16 @@
+import os
+import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
-from news_bot.news import RSS_FEEDS, NewsItem, diversify_ranked_items, score_item
+from news_bot.news import (
+    RSS_FEEDS,
+    NewsItem,
+    diversify_ranked_items,
+    fetch_feed,
+    matches_feed_filter,
+    score_item,
+)
 
 
 class RssConfigTests(unittest.TestCase):
@@ -14,6 +24,14 @@ class RssConfigTests(unittest.TestCase):
         self.assertIn("BLS Latest Indicators", RSS_FEEDS)
         self.assertIn("SEC Press Releases", RSS_FEEDS)
         self.assertIn("White House News", RSS_FEEDS)
+
+    def test_news_expansion_has_nineteen_feeds(self):
+        self.assertEqual(len(RSS_FEEDS), 19)
+        for name in (
+            "WSJ Markets", "Financial Times Markets", "NYT Business",
+            "Fortune", "TechCrunch AI", "CoinDesk",
+        ):
+            self.assertIn(name, RSS_FEEDS)
 
     def test_removed_noisy_or_broken_feeds_do_not_return(self):
         removed = {"Yahoo Finance", "Benzinga", "FRED Blog", "BLS", "U.S. Treasury"}
@@ -54,6 +72,37 @@ class RssConfigTests(unittest.TestCase):
         selected = diversify_ranked_items(rows, limit=5, max_per_publisher=2)
         self.assertEqual(sum(row.source.startswith("CNBC") for row in selected), 2)
         self.assertIn("Fed Monetary Policy", {row.source for row in selected})
+
+    def test_specialist_feeds_require_market_relevance(self):
+        tech = RSS_FEEDS["TechCrunch AI"]
+        crypto = RSS_FEEDS["CoinDesk"]
+        self.assertTrue(matches_feed_filter("Nvidia unveils a new AI chip", tech))
+        self.assertFalse(matches_feed_filter("AI improves household recipes", tech))
+        self.assertTrue(matches_feed_filter("Bitcoin ETF sees record demand", crypto))
+        self.assertFalse(matches_feed_filter("Conference schedule announced", crypto))
+
+    def test_feed_download_uses_bounded_timeout(self):
+        response = MagicMock()
+        response.__enter__.return_value.iter_content.return_value = [(
+            b'<?xml version="1.0"?><rss><channel><item>'
+            b'<title>Fed market update</title><link>https://example.com/1</link>'
+            b'</item></channel></rss>'
+        )]
+        response.__enter__.return_value.status_code = 200
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "STATE_DIR": temp,
+            "RSS_FETCH_TIMEOUT_SECONDS": "3",
+            "RSS_MAX_RESPONSE_BYTES": "64000",
+        }, clear=False), patch(
+            "news_bot.news.requests.get", return_value=response
+        ) as opened:
+            rows = fetch_feed("Fixture", {
+                "url": "https://example.com/feed.xml",
+                "group": "market_news",
+                "priority": 5,
+            })
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(opened.call_args.kwargs["timeout"], (3.0, 3.0))
 
 
 if __name__ == "__main__":

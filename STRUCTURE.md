@@ -16,7 +16,7 @@ src/
     safety.py          ← NGワード, 文字数/安全チェック, JST定義（is_night_time_jstは現在未使用）
   news_bot/          # 通常ニュースBot
     post.py            ← エントリ（python news_bot/post.py <image|diagram>）
-    news.py            ← RSS取得（16フィード）
+    news.py            ← RSS取得（19フィード）
     diagram_post.py    ← 図解画像のJSON生成パイプライン
     diagram_image.py   ← 図解PNG描画（Pillow）
     posted_history.py  ← 投稿済み履歴（repo直下 data/ を参照）
