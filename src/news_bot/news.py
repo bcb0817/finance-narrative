@@ -59,13 +59,16 @@ RSS_FEEDS: dict[str, dict] = {
     "BLS Latest Indicators":  {"url": "https://www.bls.gov/feed/bls_latest.rss",                          "group": "official_macro",  "priority": 9},
     "EIA":                    {"url": "https://www.eia.gov/rss/todayinenergy.xml",                        "group": "official_macro",  "priority": 7},
     "SEC Press Releases":     {"url": "https://www.sec.gov/news/pressreleases.rss",                       "group": "official_macro",  "priority": 8},
-    "White House News":       {"url": "https://www.whitehouse.gov/news/feed/",                            "group": "official_macro",  "priority": 7},
+    # Policy-wide feed: keep as a primary source, but do not score unrelated
+    # political/cultural announcements like monetary or economic statistics.
+    "White House News":       {"url": "https://www.whitehouse.gov/news/feed/",                            "group": "official_policy", "priority": 4},
 }
 
 # group 単位の加点（official_macro / company_filings を高めに）
 GROUP_SCORE: dict[str, float] = {
     "market_news":     0.0,
     "official_macro":  4.0,
+    "official_policy": 0.0,
     "company_filings": 3.0,
 }
 
