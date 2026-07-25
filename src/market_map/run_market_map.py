@@ -46,6 +46,31 @@ def _force() -> bool:
     return os.environ.get("FORCE_POST", "").strip().lower() in ("true", "1", "yes")
 
 
+def _market_move_gate(
+    move: float | None,
+    total_pct: float,
+    skew: float,
+    *,
+    min_abs: float,
+    min_pct: float,
+    min_skew: float,
+    force: bool = False,
+) -> dict:
+    """Evaluate large moves only; scheduled slots never bypass this gate."""
+    abs_move = abs(float(move or 0.0))
+    gate_abs = abs_move >= min_abs
+    gate_pct = abs(float(total_pct or 0.0)) >= min_pct
+    # Concentration alone is noisy on quiet days, so require meaningful size.
+    gate_skew = skew >= min_skew and abs_move >= min_abs * 0.5
+    return {
+        "abs": gate_abs,
+        "pct": gate_pct,
+        "skew": gate_skew,
+        "force": force,
+        "pass": gate_abs or gate_pct or gate_skew or force,
+    }
+
+
 def main():
     from datetime import datetime
     try:
@@ -69,30 +94,39 @@ def main():
     top_sector = post.get("top_sector", "")
     headline = post.get("headline", "")
 
-    # #13 投稿ゲート: 大きな市場変化があるときだけ投稿する。
-    #   - 時価総額変化 ±3000億ドル以上（MARKET_MAP_MIN_ABS_CHANGE_USD）
-    #   - または 指数近似の変化率 ±0.5%以上（MARKET_MAP_MIN_INDEX_PCT）
-    #   - または セクター偏り（|変化|の最大セクター占有率）が閾値以上
-    #   FORCE_POST=true のときはゲートを無視（手動テスト用）。
-    min_abs = _env_float("MARKET_MAP_MIN_ABS_CHANGE_USD", 300e9)
-    min_pct = _env_float("MARKET_MAP_MIN_INDEX_PCT", 0.5)
-    min_skew = _env_float("MARKET_MAP_SECTOR_SKEW", 0.6)
-
-    gate_abs = abs(move or 0.0) >= min_abs
-    gate_pct = abs(total_pct) >= min_pct
-    gate_skew = skew >= min_skew
-    scheduled_pre_close = session == "pre_close"
-    gate_pass = gate_abs or gate_pct or gate_skew or _force() or scheduled_pre_close
+    # 大幅変動時のみ投稿する。定時枠は判定時刻であり、ゲートを迂回しない。
+    # セクター集中は、時価総額変化が絶対額基準の半分以上の場合だけ有効。
+    # FORCE_POST=true は手動検証用の明示的な例外として維持する。
+    min_abs = _env_float("MARKET_MAP_MIN_ABS_CHANGE_USD", 500e9)
+    min_pct = _env_float("MARKET_MAP_MIN_INDEX_PCT", 1.0)
+    min_skew = _env_float("MARKET_MAP_SECTOR_SKEW", 0.7)
+    gate = _market_move_gate(
+        move,
+        total_pct,
+        skew,
+        min_abs=min_abs,
+        min_pct=min_pct,
+        min_skew=min_skew,
+        force=_force(),
+    )
+    gate_abs = gate["abs"]
+    gate_pct = gate["pct"]
+    gate_skew = gate["skew"]
+    gate_pass = gate["pass"]
 
     print(f"[GATE] |Δmcap|=${abs(move or 0)/1e9:.0f}B(>= {min_abs/1e9:.0f}B:{gate_abs}) "
           f"| idx≈{total_pct:+.2f}%(>= {min_pct}%:{gate_pct}) "
-          f"| skew={skew:.2f}({top_sector})(>= {min_skew}:{gate_skew}) "
-          f"| force={_force()} | scheduled_pre_close={scheduled_pre_close} -> pass={gate_pass}")
+          f"| skew={skew:.2f}({top_sector})(>= {min_skew} and "
+          f"|move|>={min_abs/2/1e9:.0f}B:{gate_skew}) "
+          f"| force={_force()} -> pass={gate_pass}")
 
     if not gate_pass:
         _decision_log(
             market_move=move, market_cap_change=cap_change,
-            threshold=f"abs>={min_abs/1e9:.0f}B or pct>={min_pct}% or skew>={min_skew}",
+            threshold=(
+                f"abs>={min_abs/1e9:.0f}B or pct>={min_pct}% or "
+                f"(skew>={min_skew} and abs>={min_abs/2/1e9:.0f}B)"
+            ),
             should_post=False, skip_reason="market_gate_not_met",
             post_enabled=_post_enabled(), dry_run=dry_run,
             actual_post_attempted=False, tweet_id="-",
@@ -132,7 +166,7 @@ def main():
                 "market_cap_change": cap_change,
                 "market_scope": "market_map",
                 "market_session": session,
-                "scheduled_market_summary": scheduled_pre_close,
+                "large_move_gate": True,
             },
         )
 
@@ -141,7 +175,10 @@ def main():
 
     _decision_log(
         market_move=move, market_cap_change=cap_change,
-        threshold=f"abs>={min_abs/1e9:.0f}B or pct>={min_pct}% or skew>={min_skew}",
+        threshold=(
+            f"abs>={min_abs/1e9:.0f}B or pct>={min_pct}% or "
+            f"(skew>={min_skew} and abs>={min_abs/2/1e9:.0f}B)"
+        ),
         should_post=should_post, skip_reason=skip_reason,
         post_enabled=_post_enabled(), dry_run=dry_run,
         actual_post_attempted=_post_enabled(), tweet_id=tweet_id or "-",
