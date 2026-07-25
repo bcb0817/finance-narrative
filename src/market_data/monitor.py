@@ -144,6 +144,7 @@ def evaluate_bars(
         notify_market_preview(
             movement, text, fixture=fixture,
             blocked_reason="external_display_not_approved" if not external_display_approved() else "",
+            chart_path=str(chart),
         )
     if dry_run or fixture:
         return {

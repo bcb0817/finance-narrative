@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from common.operations_alerts import send_discord_alerts
+from common.operations_alerts import send_discord_preview
 
 from .models import MarketMovement
 from .posts import external_display_approved
@@ -8,7 +8,7 @@ from .posts import external_display_approved
 
 def notify_market_preview(
     movement: MarketMovement, text: str, *, fixture: bool = False,
-    blocked_reason: str = "",
+    blocked_reason: str = "", chart_path: str = "",
 ) -> dict:
     if fixture:
         detail = (
@@ -22,7 +22,7 @@ def notify_market_preview(
         )
     else:
         detail = f"{movement.alert_type} {movement.symbol}\n{text}"
-    return send_discord_alerts([{
-        "code": f"market_preview_{movement.movement_id}",
-        "severity": "info", "detail": detail,
-    }])
+    return send_discord_preview(
+        f"market_preview_{movement.movement_id}", detail,
+        file_path=chart_path if fixture or external_display_approved() else "",
+    )
