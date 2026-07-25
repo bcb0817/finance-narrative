@@ -212,6 +212,65 @@ def _group_summary(metrics: list[dict], key: str, label: str) -> list[str]:
     return out
 
 
+def _fx_summary_lines(days: int) -> list[str]:
+    try:
+        from fx_alert.storage import read_jsonl
+        cutoff = datetime.now(JST) - timedelta(days=max(1, days))
+        movements = []
+        for row in read_jsonl("movements.jsonl"):
+            try:
+                when = datetime.fromisoformat(str(row.get("detected_at", "")))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=JST)
+                if when >= cutoff:
+                    movements.append(row)
+            except ValueError:
+                continue
+        alerts = []
+        for row in read_jsonl("alerts.jsonl"):
+            try:
+                when = datetime.fromisoformat(str(row.get("timestamp", "")))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=JST)
+                if when >= cutoff:
+                    alerts.append(row)
+            except ValueError:
+                continue
+        posted = sum(1 for row in alerts if row.get("status") == "posted")
+        blocked = sum(1 for row in alerts if row.get("status") != "posted")
+        duplicate = sum(1 for row in alerts if row.get("reason") == "duplicate_movement")
+        quality_stops = sum(1 for row in alerts if row.get("status") == "quality_blocked")
+        safety_stops = sum(1 for row in alerts if row.get("status") in {
+            "review_blocked", "content_blocked", "image_blocked",
+        })
+        largest = max(movements, key=lambda row: abs(float(row.get("change_pct", 0) or 0)), default=None)
+        directions = defaultdict(int)
+        windows = defaultdict(int)
+        confidence = defaultdict(int)
+        for row in movements:
+            directions[str(row.get("direction", "unknown"))] += 1
+            windows[str(row.get("window", "unknown"))] += 1
+            confidence[str(row.get("cause_confidence", "unknown"))] += 1
+        lines = [
+            "",
+            "--- FX Alert ---",
+            f"  detected={len(movements)} posted={posted} blocked/skipped={blocked}",
+            f"  safety_stops={safety_stops} duplicate_stops={duplicate} quality_stops={quality_stops}",
+            f"  by_direction={dict(directions)}",
+            f"  by_window={dict(windows)}",
+            f"  by_confidence={dict(confidence)}",
+        ]
+        if largest:
+            lines.append(
+                f"  largest={largest.get('pair','-')} {largest.get('window','-')} "
+                f"{float(largest.get('change_yen',0) or 0):+.2f}円 "
+                f"({float(largest.get('change_pct',0) or 0):+.2f}%)"
+            )
+        return lines
+    except Exception as exc:
+        return ["", f"--- FX Alert ---", f"  unavailable ({type(exc).__name__})"]
+
+
 def build_report(days: int = 1) -> str:
     """直近days日の投稿実績レポートを文字列で返す。"""
     try:
@@ -247,7 +306,7 @@ def build_report(days: int = 1) -> str:
         if snap:
             staged_metrics.append({**post, **snap})
     if not metrics:
-        return "レポート対象の投稿がありません（まだ実投稿していない可能性があります）。"
+        return "レポート対象の投稿がありません（まだ実投稿していない可能性があります）。\n" + "\n".join(_fx_summary_lines(days))
 
     cutoff = datetime.now(JST) - timedelta(days=days)
     recent = []
@@ -259,6 +318,7 @@ def build_report(days: int = 1) -> str:
             continue
 
     lines: list[str] = []
+    lines.extend(_fx_summary_lines(days))
     lines.append("=" * 60)
     lines.append(f"投稿実績レポート  {datetime.now(JST):%Y-%m-%d %H:%M} JST")
     lines.append("=" * 60)

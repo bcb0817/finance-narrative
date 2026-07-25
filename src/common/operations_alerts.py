@@ -66,6 +66,24 @@ def evaluate(now: datetime | None=None) -> list[dict]:
                 try: json.loads(line)
                 except json.JSONDecodeError:
                     alerts.append({"code":code,"severity":"medium","detail":f"line {number}"}); break
+    if os.getenv("FX_ENABLED","true").strip().lower() in TRUE_VALUES:
+        try:
+            from fx_alert.providers import get_provider
+            provider=get_provider().status(probe=False)
+            if not provider.available:
+                alerts.append({
+                    "code":"fx_provider_unavailable",
+                    "severity":"medium",
+                    "bot":"fx-alert",
+                    "detail":provider.detail,
+                })
+        except Exception as exc:
+            alerts.append({
+                "code":"fx_provider_unavailable",
+                "severity":"medium",
+                "bot":"fx-alert",
+                "detail":f"provider status failed: {type(exc).__name__}",
+            })
     return [{**row,"detected_at":now.isoformat()} for row in alerts]
 
 
