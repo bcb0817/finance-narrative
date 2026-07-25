@@ -133,6 +133,7 @@ class MarketDataIntegrationTests(unittest.TestCase):
 
     def test_market_post_flag_blocks_before_review(self):
         with patch.dict(os.environ, {"TWELVEDATA_EXTERNAL_DISPLAY_APPROVED": "true"}), \
+             patch("market_data.posts.symbol_external_display_allowed", return_value=True), \
              patch("market_data.posts.review_tweet_with_openai") as review:
             result = publish_market(self.movement(), "unused.png")
         self.assertEqual(result.status, "disabled")
@@ -141,12 +142,28 @@ class MarketDataIntegrationTests(unittest.TestCase):
     def test_global_post_flag_cannot_force_a_post(self):
         with patch.dict(os.environ, {
             "TWELVEDATA_EXTERNAL_DISPLAY_APPROVED": "true",
-            "MARKET_DATA_POST_ENABLED": "true", "POST_ENABLED": "false",
-        }), patch("market_data.posts.review_tweet_with_openai", return_value={"ok_to_post": True}), \
+            "MARKET_DATA_POST_ENABLED": "true", "MEGACAP_POST_ENABLED": "true",
+            "POST_ENABLED": "false",
+        }), patch("market_data.posts.symbol_external_display_allowed", return_value=True), \
+             patch("market_data.posts.review_tweet_with_openai", return_value={"ok_to_post": True}), \
              patch("market_data.posts.post_tweet_with_image", return_value="") as post:
             result = publish_market(self.movement(), "unused.png")
         self.assertEqual(result.status, "global_disabled")
         post.assert_not_called()
+
+    def test_symbol_display_flag_blocks_post(self):
+        with patch.dict(os.environ, {"TWELVEDATA_EXTERNAL_DISPLAY_APPROVED": "true"}):
+            result = publish_market(self.movement(), "unused.png")
+        self.assertEqual(result.status, "symbol_license_blocked")
+
+    def test_post_type_flag_blocks_post(self):
+        with patch.dict(os.environ, {
+            "TWELVEDATA_EXTERNAL_DISPLAY_APPROVED": "true",
+            "MARKET_DATA_POST_ENABLED": "true",
+            "MEGACAP_POST_ENABLED": "false",
+        }), patch("market_data.posts.symbol_external_display_allowed", return_value=True):
+            result = publish_market(self.movement(), "unused.png")
+        self.assertEqual(result.status, "type_disabled")
 
     def test_duplicate_gate(self):
         movement = self.movement()
