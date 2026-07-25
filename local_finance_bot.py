@@ -64,7 +64,7 @@ except Exception:
     ET = timezone(timedelta(hours=-4))  # 近似フォールバック
 
 BOTS = ("news", "narrative", "market-map", "weekly")
-SCHED_BOTS = BOTS + ("metrics", "report", "radar")
+SCHED_BOTS = BOTS + ("metrics", "report", "radar", "fx-monitor")
 
 DEFAULT_SCHEDULE = {
     "news": {"enabled": True, "type": "interval_minutes", "every_minutes": 30,
@@ -79,6 +79,7 @@ DEFAULT_SCHEDULE = {
     "report": {"enabled": True, "type": "daily_jst", "time": "22:00"},
     "metrics": {"enabled": True, "type": "interval_minutes", "every_minutes": 30},
     "radar": {"enabled": False, "type": "daily_jst_times", "times": ["21:00","22:30"]},
+    "fx-monitor": {"enabled": True, "type": "interval_minutes", "every_minutes": 5},
 }
 
 
@@ -113,6 +114,11 @@ def load_schedule() -> dict:
         os.environ.get("XAI_X_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes"))
     radar_interval = os.environ.get("XAI_SEARCH_INTERVAL_MINUTES", "60")
     if radar_interval.isdigit() and int(radar_interval) > 0: sched["radar"]["every_minutes"] = int(radar_interval)
+    sched["fx-monitor"]["enabled"] = bool(sched["fx-monitor"].get("enabled", True)) and (
+        os.environ.get("FX_ENABLED", "true").lower() in ("1", "true", "yes"))
+    fx_interval = os.environ.get("FX_POLL_INTERVAL_MINUTES", "5")
+    if fx_interval.isdigit() and int(fx_interval) > 0:
+        sched["fx-monitor"]["every_minutes"] = int(fx_interval)
     return sched
 
 
@@ -266,7 +272,7 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
     if force:
         env["FORCE_POST"] = "true"  # スケジュール条件のみ無視。安全審査はバイパスしない。
 
-    if bot in ("report", "metrics", "radar"):
+    if bot in ("report", "metrics", "radar", "fx-monitor"):
         started = datetime.now(JST)
         print(f"[RUN] bot={bot} started={started:%Y-%m-%d %H:%M:%S}")
         try:
@@ -280,13 +286,23 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
                 if metrics_result.get("status") == "error":
                     raise RuntimeError(
                         f"metrics collection failed: {metrics_result.get('status_code') or metrics_result.get('error_type') or 'unknown'}")
-            else:
+            elif bot == "radar":
                 from common.xai_radar import refresh
                 radar_result = refresh()
                 print(json.dumps(radar_result, ensure_ascii=False))
                 # disabled/key missing/budget超過は既存Bot継続のため正常終了。
                 if radar_result.get("status") == "error":
                     raise RuntimeError(f"radar failed: {radar_result.get('reason','unknown')}")
+            else:
+                from fx_alert.monitor import run_monitor
+                fx_result = run_monitor()
+                print(json.dumps(fx_result, ensure_ascii=False))
+                if fx_result.get("status") not in {
+                    "posted", "disabled", "provider_unavailable", "quality_blocked",
+                    "no_material_movement", "gate_blocked", "not_posted",
+                    "review_blocked", "content_blocked", "image_blocked",
+                }:
+                    raise RuntimeError(f"fx-alert failed: {fx_result.get('status','unknown')}")
             if bot != "report": rc=0
             err = "" if rc in (0,2) else "report failed"
         except Exception as e:  # noqa: BLE001
@@ -450,6 +466,14 @@ def cmd_status() -> None:
         xai=xai_usage_summary()
         print(f"xAI COST    : ${xai['spent_usd']:.4f}/${xai['budget_usd']:.2f} "
               f"remaining=${xai['remaining_usd']:.4f} calls(today/month)={xai['daily_calls']}/{xai['monthly_calls']}")
+        from fx_alert.providers import get_provider
+        fx_provider = get_provider().status(probe=False)
+        print(
+            "FX ALERT    : "
+            f"enabled={os.getenv('FX_ENABLED','true')} "
+            f"post_enabled={os.getenv('FX_POST_ENABLED','false')} "
+            f"provider={fx_provider.name} ready={fx_provider.available} mode={fx_provider.mode}"
+        )
     except Exception as exc:
         print(f"POST LIMIT  : unavailable ({exc})")
 
@@ -611,6 +635,62 @@ def cmd_radar_plan() -> None:
 def cmd_metrics_status() -> None:
     from common.metrics_collector import metrics_status
     print(json.dumps(metrics_status(),ensure_ascii=False,indent=2))
+
+
+def cmd_fx_status() -> None:
+    from fx_alert.monitor import configured_pairs, enabled
+    from fx_alert.providers import get_provider
+    from fx_alert.storage import load_state, read_jsonl
+    provider = get_provider().status(probe=False)
+    result = {
+        "enabled": enabled(),
+        "post_enabled": os.getenv("FX_POST_ENABLED", "false").lower() in ("1", "true", "yes"),
+        "pairs": configured_pairs(),
+        "configured_mode": os.getenv("FX_MONITOR_MODE", "websocket"),
+        "effective_mode": provider.mode,
+        "poll_interval_minutes": int(os.getenv("FX_POLL_INTERVAL_MINUTES", "5") or 5),
+        "provider": provider.to_dict(),
+        "movement_count": len(read_jsonl("movements.jsonl")),
+        "alert_count": len(read_jsonl("alerts.jsonl")),
+        "state_updated_at": load_state().get("updated_at"),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_fx_provider_status(probe: bool = False) -> None:
+    from fx_alert.providers import get_provider
+    print(json.dumps(get_provider().status(probe=probe).to_dict(), ensure_ascii=False, indent=2))
+
+
+def cmd_fx_monitor(dry_run: bool) -> None:
+    from fx_alert.monitor import run_monitor
+    print(json.dumps(run_monitor(dry_run=dry_run), ensure_ascii=False, indent=2))
+
+
+def cmd_fx_check(pair: str, fixture: bool = False) -> None:
+    from fx_alert.monitor import run_monitor
+    print(json.dumps(run_monitor(dry_run=True, fixture=fixture, pair=pair), ensure_ascii=False, indent=2))
+
+
+def cmd_fx_chart(pair: str, period: str) -> None:
+    from fx_alert.chart import create_chart
+    from fx_alert.detector import strongest_movement, detect_movements
+    from fx_alert.fixture import movement_fixture
+    hours = {"1h": 1, "4h": 4, "24h": 24}.get(period, 24)
+    bars = movement_fixture(pair, points=max(180, hours * 60))
+    movement = strongest_movement(detect_movements(bars))
+    if movement is None:
+        raise SystemExit("fixture did not produce a chartable movement")
+    image, metadata = create_chart(bars, movement)
+    print(json.dumps({"status": "created", "chart": str(image), "metadata": str(metadata)}, ensure_ascii=False, indent=2))
+
+
+def cmd_fx_history(limit: int) -> None:
+    from fx_alert.storage import read_jsonl
+    print(json.dumps({
+        "movements": read_jsonl("movements.jsonl", limit=limit),
+        "alerts": read_jsonl("alerts.jsonl", limit=limit),
+    }, ensure_ascii=False, indent=2))
 
 
 def cmd_alerts(clear_resolved: bool=False) -> None:
@@ -926,6 +1006,22 @@ def main() -> None:
     sub.add_parser("radar-plan", help="Today's xAI priority-window allocation")
     sub.add_parser("metrics-status", help="Metrics collection status")
     sub.add_parser("health-check", help="Windows local daemon and data-quality health")
+    sub.add_parser("fx-status", help="FX Alertの設定・実行状態")
+    fx_provider = sub.add_parser("fx-provider-status", help="FXデータプロバイダー状態")
+    fx_provider.add_argument("--probe", action="store_true")
+    fx_monitor = sub.add_parser("fx-monitor", help="FX監視を1回実行")
+    fx_monitor.add_argument("--dry-run", action="store_true", required=True)
+    fx_check = sub.add_parser("fx-check", help="指定通貨ペアを安全に判定")
+    fx_check.add_argument("pair")
+    fx_check.add_argument("--fixture", action="store_true")
+    fx_chart = sub.add_parser("fx-chart", help="FXチャートを生成（投稿なし）")
+    fx_chart.add_argument("pair")
+    fx_chart.add_argument("--period", choices=["1h", "4h", "24h"], default="24h")
+    fx_test = sub.add_parser("fx-alert-test", help="fixtureによるエンドツーエンド試験")
+    fx_test.add_argument("--fixture", action="store_true", required=True)
+    fx_history = sub.add_parser("fx-history", help="FX検知・通知履歴")
+    fx_history.add_argument("--limit", type=int, default=20)
+    sub.add_parser("fx-enable-status", help="FX投稿フラグを変更せず表示")
     xcost=sub.add_parser("xai-cost-report", help="xAI exclusive cost report")
     xcost.add_argument("--days",type=int,default=30)
     xroi=sub.add_parser("xai-roi-report", help="xAI influence and ROI report")
@@ -972,6 +1068,14 @@ def main() -> None:
     elif args.cmd == "radar-plan": cmd_radar_plan()
     elif args.cmd == "metrics-status": cmd_metrics_status()
     elif args.cmd == "health-check": cmd_health()
+    elif args.cmd == "fx-status": cmd_fx_status()
+    elif args.cmd == "fx-provider-status": cmd_fx_provider_status(args.probe)
+    elif args.cmd == "fx-monitor": cmd_fx_monitor(args.dry_run)
+    elif args.cmd == "fx-check": cmd_fx_check(args.pair, args.fixture)
+    elif args.cmd == "fx-chart": cmd_fx_chart(args.pair, args.period)
+    elif args.cmd == "fx-alert-test": cmd_fx_check("USDJPY", True)
+    elif args.cmd == "fx-history": cmd_fx_history(args.limit)
+    elif args.cmd == "fx-enable-status": cmd_fx_status()
     elif args.cmd == "xai-cost-report": cmd_xai_cost(args.days)
     elif args.cmd == "xai-roi-report": cmd_xai_roi(args.days)
     elif args.cmd == "alerts-self-test": cmd_alert_self_test()

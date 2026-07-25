@@ -83,6 +83,9 @@ def health_check() -> dict:
     from common.metrics_collector import metrics_status
     from common.operations_alerts import self_test
     from common.xai_radar import cache_status, usage_summary
+    from fx_alert.monitor import configured_pairs, enabled as fx_enabled
+    from fx_alert.providers import get_provider
+    fx_provider=get_provider().status(probe=False)
     runs=_jsonl(log_dir()/"run_history.jsonl")
     last_success={}
     for row in runs:
@@ -92,6 +95,12 @@ def health_check() -> dict:
         "state":heartbeat.get("status"),"pid":pid},"last_success":last_success,
         "disk":{"free_gb":round(disk.free/1024**3,2),"free_percent":round(disk.free/disk.total*100,2)},
         "xai":{"cache":cache_status(),"usage":usage_summary()},"metrics":metrics_status(),"alerts_write":self_test(),
+        "fx_alert":{
+            "enabled":fx_enabled(),
+            "post_enabled":os.getenv("FX_POST_ENABLED","false").lower() in ("1","true","yes"),
+            "pairs":configured_pairs(),
+            "provider":fx_provider.to_dict(),
+        },
     }
     if not process_alive or heartbeat_age is None or heartbeat_age>10 or disk.free/disk.total<.05 or result["alerts_write"]["status"]!="ok":
         result["status"]="degraded"

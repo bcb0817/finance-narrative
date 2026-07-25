@@ -250,3 +250,32 @@ Current cost and quality controls:
   saves per-task status under `outputs/reports`.
 - Follow conversion remains `unavailable` unless X actually supplies follow and
   profile-click metrics. The bot does not fabricate this KPI.
+
+## FX Alert Bot
+
+USD/JPYの大幅変動を5分ごとに監視し、データ品質、固定閾値とボラティリティ、
+再通知クールダウンを通過した場合に1600×900のチャートと投稿候補を生成します。
+初期値は `FX_POST_ENABLED=false` であり、`POST_ENABLED` と両方がtrueになるまで
+Xへは投稿しません。実投稿時は既存Moderation、金融安全レビュー、全Bot共通の
+投稿上限を通過する必要があります。
+
+初期プロバイダーはTwelve DataのRESTです。WebSocket契約能力は自動で仮定せず、
+利用不可または未実装の場合は安全な5分REST pollingとして稼働します。
+`TWELVE_DATA_API_KEY` が未設定ならFX Alertだけが安全停止し、他Botは継続します。
+Polygonは交換用interfaceのみで、本番アクセスは無効です。価格・bar・変動・
+利用記録は `data/fx/`、チャートは `outputs/fx_charts/YYYY-MM-DD/` に保存します。
+
+```powershell
+.\.venv\Scripts\python.exe local_finance_bot.py fx-status
+.\.venv\Scripts\python.exe local_finance_bot.py fx-provider-status
+.\.venv\Scripts\python.exe local_finance_bot.py fx-monitor --dry-run
+.\.venv\Scripts\python.exe local_finance_bot.py fx-check USDJPY
+.\.venv\Scripts\python.exe local_finance_bot.py fx-chart USDJPY --period 24h
+.\.venv\Scripts\python.exe local_finance_bot.py fx-alert-test --fixture
+.\.venv\Scripts\python.exe local_finance_bot.py fx-history
+.\.venv\Scripts\python.exe local_finance_bot.py fx-enable-status
+```
+
+閾値、品質上限、API呼出上限、保持期間は `.env.example` の `FX_*` で変更できます。
+料金単価が不明な契約ではコストを推測せず、呼出回数と「推定コスト利用不可」を
+分けて記録します。APIキー、Webhook URL、`.env` 全体をログへ出してはいけません。

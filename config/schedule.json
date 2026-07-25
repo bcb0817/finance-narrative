@@ -42,5 +42,10 @@
     "enabled": true,
     "type": "daily_jst_times",
     "times": ["21:00", "22:30"]
+  },
+  "fx-monitor": {
+    "enabled": true,
+    "type": "interval_minutes",
+    "every_minutes": 5
   }
 }

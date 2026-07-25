@@ -220,6 +220,7 @@ backups/
 .local-backups/
 data/openai/
 data/xai/
+data/fx/
 data/logo_cache/
 *.bak-*
 knowledge/*
