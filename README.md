@@ -190,6 +190,7 @@ FONT_PATH=C:/Windows/Fonts/YuGothM.ttc
 
 - 投資助言・売買推奨は禁止（NGワード + OpenAIレビューの二重ゲート、fail closed）
 - 未確認の数字・事実の捏造は禁止。市場データ取得失敗時は推測で埋めずスキップ
+- 通常投稿は簡潔さを維持し、詳しい解説が必要な複雑事象に限って130文字超を許可。背景・因果・市場の注目点を省略せず、文章の完結を優先
 - 投稿価値ゲート: news は post_value>=7 かつ 関連度/話題性ゲート、narrative は post_value>=8
 - 履歴は**投稿成功後だけ**保存。失敗・POST_ENABLED=false では保存しない
 

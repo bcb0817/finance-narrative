@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "common"))
 
 from safety import (
+    PROMPT_SAFETY_RULES,
     generated_post_quality_error,
     normalize_generated_post_text,
     safety_check,
@@ -32,6 +33,10 @@ class GeneratedPostQualityTest(unittest.TestCase):
         text = "【米国株】【決算】大型テックの利益率を確認。"
         self.assertEqual(normalize_generated_post_text(text), text)
         self.assertEqual(generated_post_quality_error(text), "")
+
+    def test_prompt_allows_longer_complete_explanations_for_complex_events(self):
+        self.assertIn("複雑な事象では、130文字を超えてもよい", PROMPT_SAFETY_RULES)
+        self.assertIn("文章の完結を優先する", PROMPT_SAFETY_RULES)
 
 
 if __name__ == "__main__":
