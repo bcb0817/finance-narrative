@@ -271,6 +271,52 @@ def _fx_summary_lines(days: int) -> list[str]:
         return ["", f"--- FX Alert ---", f"  unavailable ({type(exc).__name__})"]
 
 
+def _market_data_summary_lines(days: int) -> list[str]:
+    try:
+        from market_data.posts import external_display_approved, market_post_enabled
+        from market_data.storage import read_jsonl, usage_summary
+        cutoff = datetime.now(JST) - timedelta(days=max(1, days))
+
+        def recent(name: str, time_key: str) -> list[dict]:
+            result = []
+            for row in read_jsonl(name):
+                if str(row.get("data_source", "")).lower() == "fixture":
+                    continue
+                try:
+                    when = datetime.fromisoformat(str(row.get(time_key, "")))
+                    if when.tzinfo is None:
+                        when = when.replace(tzinfo=JST)
+                    if when >= cutoff:
+                        result.append(row)
+                except ValueError:
+                    continue
+            return result
+
+        movements = recent("movements.jsonl", "detected_at")
+        alerts = recent("alerts.jsonl", "timestamp")
+        by_symbol = defaultdict(int)
+        by_type = defaultdict(int)
+        by_window = defaultdict(int)
+        for row in movements:
+            by_symbol[str(row.get("symbol", "unknown"))] += 1
+            by_type[str(row.get("alert_type", "unknown"))] += 1
+            by_window[str(row.get("window_minutes", "unknown"))] += 1
+        usage = usage_summary()
+        return [
+            "",
+            "--- Multi-Asset Market Data ---",
+            f"  detected={len(movements)} alerts={len(alerts)}",
+            f"  external_display_approved={external_display_approved()} post_enabled={market_post_enabled()}",
+            f"  by_symbol={dict(by_symbol)}",
+            f"  by_alert_type={dict(by_type)}",
+            f"  by_window_minutes={dict(by_window)}",
+            f"  credits_today={usage['daily_credits']}/{usage['daily_limit']} "
+            f"cache_hit_rate={usage['cache_hit_rate']:.1%} errors={usage['errors']}",
+        ]
+    except Exception as exc:
+        return ["", "--- Multi-Asset Market Data ---", f"  unavailable ({type(exc).__name__})"]
+
+
 def build_report(days: int = 1) -> str:
     """直近days日の投稿実績レポートを文字列で返す。"""
     try:
@@ -306,7 +352,10 @@ def build_report(days: int = 1) -> str:
         if snap:
             staged_metrics.append({**post, **snap})
     if not metrics:
-        return "レポート対象の投稿がありません（まだ実投稿していない可能性があります）。\n" + "\n".join(_fx_summary_lines(days))
+        return (
+            "レポート対象の投稿がありません（まだ実投稿していない可能性があります）。\n"
+            + "\n".join(_fx_summary_lines(days) + _market_data_summary_lines(days))
+        )
 
     cutoff = datetime.now(JST) - timedelta(days=days)
     recent = []
@@ -319,6 +368,7 @@ def build_report(days: int = 1) -> str:
 
     lines: list[str] = []
     lines.extend(_fx_summary_lines(days))
+    lines.extend(_market_data_summary_lines(days))
     lines.append("=" * 60)
     lines.append(f"投稿実績レポート  {datetime.now(JST):%Y-%m-%d %H:%M} JST")
     lines.append("=" * 60)

@@ -47,5 +47,10 @@
     "enabled": true,
     "type": "interval_minutes",
     "every_minutes": 5
+  },
+  "market-data": {
+    "enabled": true,
+    "type": "interval_minutes",
+    "every_minutes": 15
   }
 }

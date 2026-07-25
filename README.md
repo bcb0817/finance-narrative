@@ -279,3 +279,44 @@ Polygonは交換用interfaceのみで、本番アクセスは無効です。価�
 閾値、品質上限、API呼出上限、保持期間は `.env.example` の `FX_*` で変更できます。
 料金単価が不明な契約ではコストを推測せず、呼出回数と「推定コスト利用不可」を
 分けて記録します。APIキー、Webhook URL、`.env` 全体をログへ出してはいけません。
+
+## Twelve Data マルチアセット市場監視
+
+米国メガキャップ、主要ETF、債券・金ETF、BTC/USDをTwelve Data RESTで
+15分ごとにローテーション監視します。固定変動率に加え、z-score、ATR倍率、
+ブレイクアウト、相対出来高を二次条件として使い、通常の値動きでは通知しません。
+米国株とETFは通常取引時間だけ、暗号資産は1時間に1回の補助監視です。
+USD/JPYは既存FX Alertが担当するため二重取得しません。
+
+個人向け契約の外部表示権を自動では仮定しません。現在の安全な初期値は次の通りです。
+
+```env
+MARKET_DATA_ENABLED=true
+MARKET_DATA_POST_ENABLED=false
+TWELVEDATA_EXTERNAL_DISPLAY_APPROVED=false
+```
+
+外部表示が未承認の間、取得値・チャート・投稿本文はローカルだけに保存され、
+DiscordとXには出ません。fixture通知だけは
+`[TEST/FIXTURE・架空データ]` と明示して送信できます。市場データの投稿には
+上記2フラグ、全体の`POST_ENABLED`、OpenAIレビュー、既存の投稿上限をすべて
+通過する必要があります。API creditは分・日単位で記録し、80%で低優先取得を
+止め、95%で全取得を安全停止します。
+
+```powershell
+.\.venv\Scripts\python.exe local_finance_bot.py td-capabilities
+.\.venv\Scripts\python.exe local_finance_bot.py td-provider-status
+.\.venv\Scripts\python.exe local_finance_bot.py market-data-status
+.\.venv\Scripts\python.exe local_finance_bot.py market-watchlist
+.\.venv\Scripts\python.exe local_finance_bot.py market-check NVDA
+.\.venv\Scripts\python.exe local_finance_bot.py market-chart NVDA --period 24h
+.\.venv\Scripts\python.exe local_finance_bot.py mega-alert-test --fixture
+.\.venv\Scripts\python.exe local_finance_bot.py etf-alert-test --fixture
+.\.venv\Scripts\python.exe local_finance_bot.py cross-asset-test --fixture
+.\.venv\Scripts\python.exe local_finance_bot.py earnings-reaction-test --fixture
+.\.venv\Scripts\python.exe local_finance_bot.py market-usage
+.\.venv\Scripts\python.exe local_finance_bot.py market-data-enable-status
+```
+
+監視対象は`config/market_watchlist.json`、検知・使用量・キャッシュは
+`data/market_data/`、チャートとメタデータは`outputs/market_charts/`に保存します。

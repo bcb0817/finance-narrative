@@ -64,7 +64,7 @@ except Exception:
     ET = timezone(timedelta(hours=-4))  # 近似フォールバック
 
 BOTS = ("news", "narrative", "market-map", "weekly")
-SCHED_BOTS = BOTS + ("metrics", "report", "radar", "fx-monitor")
+SCHED_BOTS = BOTS + ("metrics", "report", "radar", "fx-monitor", "market-data")
 
 DEFAULT_SCHEDULE = {
     "news": {"enabled": True, "type": "interval_minutes", "every_minutes": 30,
@@ -80,6 +80,7 @@ DEFAULT_SCHEDULE = {
     "metrics": {"enabled": True, "type": "interval_minutes", "every_minutes": 30},
     "radar": {"enabled": False, "type": "daily_jst_times", "times": ["21:00","22:30"]},
     "fx-monitor": {"enabled": True, "type": "interval_minutes", "every_minutes": 5},
+    "market-data": {"enabled": True, "type": "interval_minutes", "every_minutes": 15},
 }
 
 
@@ -119,6 +120,11 @@ def load_schedule() -> dict:
     fx_interval = os.environ.get("FX_POLL_INTERVAL_MINUTES", "5")
     if fx_interval.isdigit() and int(fx_interval) > 0:
         sched["fx-monitor"]["every_minutes"] = int(fx_interval)
+    sched["market-data"]["enabled"] = bool(sched["market-data"].get("enabled", True)) and (
+        os.environ.get("MARKET_DATA_ENABLED", "true").lower() in ("1", "true", "yes"))
+    market_interval = os.environ.get("MARKET_DATA_POLL_INTERVAL_MINUTES", "15")
+    if market_interval.isdigit() and int(market_interval) > 0:
+        sched["market-data"]["every_minutes"] = int(market_interval)
     return sched
 
 
@@ -272,7 +278,7 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
     if force:
         env["FORCE_POST"] = "true"  # スケジュール条件のみ無視。安全審査はバイパスしない。
 
-    if bot in ("report", "metrics", "radar", "fx-monitor"):
+    if bot in ("report", "metrics", "radar", "fx-monitor", "market-data"):
         started = datetime.now(JST)
         print(f"[RUN] bot={bot} started={started:%Y-%m-%d %H:%M:%S}")
         try:
@@ -293,7 +299,7 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
                 # disabled/key missing/budget超過は既存Bot継続のため正常終了。
                 if radar_result.get("status") == "error":
                     raise RuntimeError(f"radar failed: {radar_result.get('reason','unknown')}")
-            else:
+            elif bot == "fx-monitor":
                 from fx_alert.monitor import run_monitor
                 fx_result = run_monitor()
                 print(json.dumps(fx_result, ensure_ascii=False))
@@ -303,6 +309,16 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
                     "review_blocked", "content_blocked", "image_blocked",
                 }:
                     raise RuntimeError(f"fx-alert failed: {fx_result.get('status','unknown')}")
+            else:
+                from market_data.monitor import run_market_monitor
+                market_result = run_market_monitor()
+                print(json.dumps(market_result, ensure_ascii=False))
+                if market_result.get("status") not in {
+                    "completed", "disabled", "waiting_for_market_session",
+                    "provider_unavailable",
+                }:
+                    raise RuntimeError(
+                        f"market-data failed: {market_result.get('status','unknown')}")
             if bot != "report": rc=0
             err = "" if rc in (0,2) else "report failed"
         except Exception as e:  # noqa: BLE001
@@ -473,6 +489,15 @@ def cmd_status() -> None:
             f"enabled={os.getenv('FX_ENABLED','true')} "
             f"post_enabled={os.getenv('FX_POST_ENABLED','false')} "
             f"provider={fx_provider.name} ready={fx_provider.available} mode={fx_provider.mode}"
+        )
+        from market_data.monitor import market_status
+        market = market_status()
+        print(
+            "MARKET DATA : "
+            f"enabled={market['enabled']} post_enabled={market['post_enabled']} "
+            f"external_display={market['external_display_approved']} "
+            f"plan={market['plan']} credits={market['usage']['daily_credits']}/"
+            f"{market['usage']['daily_limit']}"
         )
     except Exception as exc:
         print(f"POST LIMIT  : unavailable ({exc})")
@@ -691,6 +716,57 @@ def cmd_fx_history(limit: int) -> None:
         "movements": read_jsonl("movements.jsonl", limit=limit),
         "alerts": read_jsonl("alerts.jsonl", limit=limit),
     }, ensure_ascii=False, indent=2))
+
+
+def cmd_td_capabilities(refresh: bool = False) -> None:
+    from market_data.capabilities import check_capabilities
+    print(json.dumps(check_capabilities(refresh=refresh), ensure_ascii=False, indent=2))
+
+
+def cmd_td_provider_status(probe: bool = False) -> None:
+    from market_data.provider import TwelveDataMarketProvider, provider_status
+    result = provider_status()
+    if probe:
+        try:
+            usage = TwelveDataMarketProvider().api_usage(cache_seconds=0)
+            result["probe"] = {
+                "success": True,
+                "plan_limit": usage.get("plan_limit"),
+                "daily_usage": usage.get("daily_usage"),
+            }
+        except Exception as exc:
+            result["probe"] = {"success": False, "error_type": type(exc).__name__}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_market_data_status() -> None:
+    from market_data.monitor import market_status
+    print(json.dumps(market_status(), ensure_ascii=False, indent=2))
+
+
+def cmd_market_watchlist() -> None:
+    from market_data.symbols import load_watchlist
+    print(json.dumps(load_watchlist(), ensure_ascii=False, indent=2))
+
+
+def cmd_market_check(symbol: str) -> None:
+    from market_data.monitor import check_symbol
+    print(json.dumps(check_symbol(symbol), ensure_ascii=False, indent=2))
+
+
+def cmd_market_chart(symbol: str, period: str) -> None:
+    from market_data.monitor import chart_symbol
+    print(json.dumps(chart_symbol(symbol, period=period), ensure_ascii=False, indent=2))
+
+
+def cmd_market_fixture(kind: str) -> None:
+    from market_data.monitor import run_fixture
+    print(json.dumps(run_fixture(kind, send_preview=True), ensure_ascii=False, indent=2))
+
+
+def cmd_market_usage() -> None:
+    from market_data.storage import usage_summary
+    print(json.dumps(usage_summary(), ensure_ascii=False, indent=2))
 
 
 def cmd_alerts(clear_resolved: bool=False) -> None:
@@ -1022,6 +1098,22 @@ def main() -> None:
     fx_history = sub.add_parser("fx-history", help="FX検知・通知履歴")
     fx_history.add_argument("--limit", type=int, default=20)
     sub.add_parser("fx-enable-status", help="FX投稿フラグを変更せず表示")
+    td_capabilities = sub.add_parser("td-capabilities", help="Twelve Data capability and plan audit")
+    td_capabilities.add_argument("--refresh", action="store_true")
+    td_provider = sub.add_parser("td-provider-status", help="Twelve Data provider status")
+    td_provider.add_argument("--probe", action="store_true")
+    sub.add_parser("market-data-status", help="Multi-asset monitor status")
+    sub.add_parser("market-watchlist", help="Configured multi-asset watchlist")
+    market_check = sub.add_parser("market-check", help="Safely inspect one market symbol")
+    market_check.add_argument("symbol")
+    market_chart = sub.add_parser("market-chart", help="Create a local market chart without posting")
+    market_chart.add_argument("symbol")
+    market_chart.add_argument("--period", choices=["1h", "4h", "24h"], default="24h")
+    for command in ("mega-alert-test", "etf-alert-test", "cross-asset-test", "earnings-reaction-test"):
+        fixture_parser = sub.add_parser(command, help="Run a clearly labelled local fixture test")
+        fixture_parser.add_argument("--fixture", action="store_true", required=True)
+    sub.add_parser("market-usage", help="Twelve Data credit and cache usage")
+    sub.add_parser("market-data-enable-status", help="Display market-data flags without changing them")
     xcost=sub.add_parser("xai-cost-report", help="xAI exclusive cost report")
     xcost.add_argument("--days",type=int,default=30)
     xroi=sub.add_parser("xai-roi-report", help="xAI influence and ROI report")
@@ -1076,6 +1168,17 @@ def main() -> None:
     elif args.cmd == "fx-alert-test": cmd_fx_check("USDJPY", True)
     elif args.cmd == "fx-history": cmd_fx_history(args.limit)
     elif args.cmd == "fx-enable-status": cmd_fx_status()
+    elif args.cmd == "td-capabilities": cmd_td_capabilities(args.refresh)
+    elif args.cmd == "td-provider-status": cmd_td_provider_status(args.probe)
+    elif args.cmd in ("market-data-status", "market-data-enable-status"): cmd_market_data_status()
+    elif args.cmd == "market-watchlist": cmd_market_watchlist()
+    elif args.cmd == "market-check": cmd_market_check(args.symbol)
+    elif args.cmd == "market-chart": cmd_market_chart(args.symbol, args.period)
+    elif args.cmd == "mega-alert-test": cmd_market_fixture("mega")
+    elif args.cmd == "etf-alert-test": cmd_market_fixture("etf")
+    elif args.cmd == "cross-asset-test": cmd_market_fixture("cross_asset")
+    elif args.cmd == "earnings-reaction-test": cmd_market_fixture("earnings")
+    elif args.cmd == "market-usage": cmd_market_usage()
     elif args.cmd == "xai-cost-report": cmd_xai_cost(args.days)
     elif args.cmd == "xai-roi-report": cmd_xai_roi(args.days)
     elif args.cmd == "alerts-self-test": cmd_alert_self_test()

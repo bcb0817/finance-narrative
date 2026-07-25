@@ -86,6 +86,11 @@ def health_check() -> dict:
     from fx_alert.monitor import configured_pairs, enabled as fx_enabled
     from fx_alert.providers import get_provider
     fx_provider=get_provider().status(probe=False)
+    try:
+        from market_data.monitor import market_status
+        market_data_status=market_status()
+    except Exception as exc:
+        market_data_status={"enabled":False,"status":"unavailable","error_type":type(exc).__name__}
     runs=_jsonl(log_dir()/"run_history.jsonl")
     last_success={}
     for row in runs:
@@ -101,6 +106,7 @@ def health_check() -> dict:
             "pairs":configured_pairs(),
             "provider":fx_provider.to_dict(),
         },
+        "market_data":market_data_status,
     }
     if not process_alive or heartbeat_age is None or heartbeat_age>10 or disk.free/disk.total<.05 or result["alerts_write"]["status"]!="ok":
         result["status"]="degraded"
