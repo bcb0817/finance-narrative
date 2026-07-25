@@ -6,7 +6,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -21,6 +21,7 @@ from market_data.posts import publish_market
 from market_data.provider import MarketDataUnavailable, TwelveDataMarketProvider
 from market_data.state import check_gate, remember
 from market_data.storage import append_jsonl, cleanup, market_data_dir, read_jsonl
+from common.operations_alerts import send_discord_preview
 
 
 class MarketDataIntegrationTests(unittest.TestCase):
@@ -100,6 +101,30 @@ class MarketDataIntegrationTests(unittest.TestCase):
         self.assertEqual((metadata["width"], metadata["height"]), (1600, 900))
         self.assertEqual(metadata["movement"]["current_price"], bars[-1].close)
         self.assertEqual(metadata["source"], "fixture")
+
+    def test_discord_preview_attaches_chart_once(self):
+        result = evaluate_bars(
+            bars_fixture(), asset_type="equity", dry_run=True, fixture=True,
+        )
+        response = Mock()
+        response.raise_for_status.return_value = None
+        session = Mock()
+        session.post.return_value = response
+        with patch.dict(os.environ, {
+            "DISCORD_ALERTS_ENABLED": "true",
+            "DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/test",
+        }):
+            first = send_discord_preview(
+                "fixture-chart-test", "fixture result",
+                file_path=result["chart"], session=session,
+            )
+            second = send_discord_preview(
+                "fixture-chart-test", "fixture result",
+                file_path=result["chart"], session=session,
+            )
+        self.assertTrue(first["attachment_sent"])
+        self.assertEqual(second["status"], "duplicate")
+        self.assertIn("files", session.post.call_args.kwargs)
 
     def test_chart_y_axis_has_minimum_two_percent_span(self):
         bars = bars_fixture(volume_spike=False)

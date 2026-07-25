@@ -397,6 +397,63 @@ def send_discord_alerts(rows: list[dict], *, now: datetime | None=None,
             "checked_at":now.isoformat()}
 
 
+def send_discord_preview(code: str, detail: str, *, file_path: str = "",
+                         session=requests) -> dict:
+    """Send one result preview once, optionally attaching a safe local chart."""
+    if os.getenv("DISCORD_ALERTS_ENABLED","false").strip().lower() not in TRUE_VALUES:
+        return {"status":"disabled","sent":False}
+    url=_discord_webhook_url()
+    if not url:
+        return {"status":"configuration_error","sent":False}
+    stable_code=str(code or "").strip()[:160]
+    if not stable_code:
+        return {"status":"invalid_preview","sent":False}
+    state_path=state_dir()/"discord_preview_notifications.json"
+    state=_read_json(state_path,{"codes":[]})
+    sent_codes={str(item) for item in state.get("codes",[])}
+    if stable_code in sent_codes:
+        return {"status":"duplicate","sent":False,"code":stable_code}
+    payload={
+        "username":"finance-narrative preview",
+        "allowed_mentions":{"parse":[]},
+        "content":redact_discord_text(detail)[:1900],
+    }
+    attachment: Path | None=None
+    if file_path:
+        try:
+            candidate=Path(file_path).resolve()
+            allowed=output_dir("market_charts").resolve()
+            if candidate.is_file() and candidate.suffix.lower()==".png" and (
+                candidate==allowed or allowed in candidate.parents
+            ):
+                attachment=candidate
+        except OSError:
+            attachment=None
+    try:
+        if attachment:
+            with attachment.open("rb") as handle:
+                response=session.post(
+                    url,
+                    data={"payload_json":json.dumps(payload,ensure_ascii=False)},
+                    files={"files[0]":(attachment.name,handle,"image/png")},
+                    timeout=20,
+                )
+        else:
+            response=session.post(url,json=payload,timeout=10)
+        response.raise_for_status()
+    except (OSError, requests.RequestException) as exc:
+        return {"status":"delivery_failed","error_type":type(exc).__name__,
+                "sent":False,"code":stable_code}
+    sent_codes.add(stable_code)
+    state_path.parent.mkdir(parents=True,exist_ok=True)
+    _atomic_write(state_path,json.dumps({
+        "codes":sorted(sent_codes)[-2000:],
+        "updated_at":datetime.now(JST).isoformat(),
+    },ensure_ascii=False,indent=2)+"\n")
+    return {"status":"sent","sent":True,"code":stable_code,
+            "attachment_sent":bool(attachment)}
+
+
 def self_test() -> dict:
     folder=output_dir("alerts"); folder.mkdir(parents=True,exist_ok=True)
     path=folder/f"self-test-{os.getpid()}.tmp"
