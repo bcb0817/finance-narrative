@@ -543,11 +543,14 @@ def cmd_status() -> None:
         from common.data_governance import license_status
         from common.external_heartbeat import status as external_heartbeat_status
         from common.metrics_quality import stage_status
+        from common.performance_learning import strategy_status
         from market_data.shadow import report as shadow_report
         from common.json_utils import make_json_safe
         print("RUNTIME      : " + json.dumps(make_json_safe(runtime_status()), ensure_ascii=False))
         print("TD LICENSE   : " + json.dumps(make_json_safe(license_status()), ensure_ascii=False))
         print("METRICS 7D   : " + json.dumps(make_json_safe(stage_status(days=7)), ensure_ascii=False))
+        print("IMP STRATEGY : " + json.dumps(
+            make_json_safe(strategy_status()), ensure_ascii=False))
         print("SHADOW 7D    : " + json.dumps(make_json_safe(shadow_report(days=7)), ensure_ascii=False))
         print("EXT HEARTBEAT: " + json.dumps(make_json_safe(external_heartbeat_status()), ensure_ascii=False))
     except Exception as exc:
@@ -996,6 +999,11 @@ def cmd_rss_status() -> None:
     _print_json(rss_status())
 
 
+def cmd_impression_strategy_status() -> None:
+    from common.performance_learning import strategy_status
+    _print_json(strategy_status())
+
+
 def cmd_metrics_quality(command: str, *, days: int = 7) -> None:
     from common.metrics_quality import missed_items, stage_status
     value = missed_items() if command == "metrics-missed" else stage_status(days=days)
@@ -1175,6 +1183,10 @@ def main() -> None:
     sub.add_parser("config-status", help="Feature flags and effective configuration")
     sub.add_parser("radar-plan", help="Today's xAI priority-window allocation")
     sub.add_parser("rss-status", help="Per-feed RSS health without fetching or posting")
+    sub.add_parser(
+        "impression-strategy-status",
+        help="ChatGPTの日次インプレッション改善方針と適用回数",
+    )
     sub.add_parser("metrics-status", help="Metrics collection status")
     sub.add_parser("metrics-stage-status", help="Stage-level metrics status")
     sub.add_parser("metrics-missed", help="Classified missed metrics")
@@ -1278,6 +1290,7 @@ def main() -> None:
     elif args.cmd == "ai-batch-cancel": cmd_ai_batch_cancel(args.batch_id)
     elif args.cmd == "xai-status": cmd_xai_status()
     elif args.cmd == "rss-status": cmd_rss_status()
+    elif args.cmd == "impression-strategy-status": cmd_impression_strategy_status()
     elif args.cmd == "xai-smoke":
         print("[xai-smoke] config-only dry-run（検索・投稿なし）"); cmd_xai_status()
     elif args.cmd == "config-status": cmd_config_status()

@@ -28,6 +28,7 @@ def _run(name, function):
 def run_daily_report(days: int = 1) -> dict:
     from common.daily_log_analysis import analyze_daily_logs
     from common.operations_alerts import write_alerts
+    from common.performance_learning import strategy_status
     from common.ops_quality import write_roi_report
     from common.report import build_report
     from common.metrics_quality import stage_status
@@ -42,6 +43,7 @@ def run_daily_report(days: int = 1) -> dict:
         _run("git_runtime_manifest", runtime_status),
         _run("daily_log_analysis",analyze_daily_logs),
         _run("performance_report",lambda:build_report(days=days)),
+        _run("impression_strategy",strategy_status),
         _run("metrics_quality", lambda: stage_status(days=7)),
         _run("multi_asset_shadow", lambda: shadow_report(days=7)),
         _run("provider_health", provider_status),

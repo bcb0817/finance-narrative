@@ -17,9 +17,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 try:
-    from runtime import REPO_ROOT, JST, log_run
+    from runtime import REPO_ROOT, JST, log_run, state_dir
 except ImportError:  # pragma: no cover
-    from common.runtime import REPO_ROOT, JST, log_run
+    from common.runtime import REPO_ROOT, JST, log_run, state_dir
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +335,183 @@ def _empty_review() -> dict:
     }
 
 
+def _safe_strings(value, *, count: int, chars: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value[:count]:
+        text = _clip(str(item), chars)
+        if text:
+            result.append(text)
+    return result
+
+
+def _safe_rules(value, *, count: int) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value[:count]:
+        if not isinstance(item, dict):
+            continue
+        rule = _clip(str(item.get("rule") or ""), 300)
+        evidence = _clip(str(item.get("evidence") or ""), 300)
+        if rule:
+            result.append({"rule": rule, "evidence": evidence})
+    return result
+
+
+def _normalize_review(review: object) -> dict:
+    """Bound model-controlled fields before persistence or prompt reuse."""
+    source = review if isinstance(review, dict) else {}
+    result = _empty_review()
+    result["daily_summary"] = _clip(str(source.get("daily_summary") or ""), 800)
+    rows = source.get("top_posts")
+    result["top_posts"] = rows[:3] if isinstance(rows, list) else []
+    result["reusable_rules"] = _safe_rules(source.get("reusable_rules"), count=8)
+    result["rolling_rules"] = _safe_rules(source.get("rolling_rules"), count=10)
+    avoid_patterns = []
+    for item in (source.get("avoid_patterns") or [])[:8]:
+        if not isinstance(item, dict):
+            continue
+        rule = _clip(str(item.get("rule") or ""), 300)
+        reason = _clip(str(item.get("reason") or ""), 300)
+        if rule:
+            avoid_patterns.append({"rule": rule, "reason": reason})
+    result["avoid_patterns"] = avoid_patterns
+
+    raw_strategy = source.get("impression_strategy")
+    strategy = raw_strategy if isinstance(raw_strategy, dict) else {}
+    confidence = str(strategy.get("confidence") or "low").lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "low"
+    experiments = []
+    for item in (strategy.get("experiments") or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        hypothesis = _clip(str(item.get("hypothesis") or ""), 300)
+        if hypothesis:
+            experiments.append({
+                "hypothesis": hypothesis,
+                "action": _clip(str(item.get("action") or ""), 300),
+                "success_metric": _clip(str(item.get("success_metric") or ""), 200),
+            })
+    result["impression_strategy"] = {
+        "objective": _clip(str(strategy.get("objective") or ""), 400),
+        "tomorrow_focus": _safe_strings(
+            strategy.get("tomorrow_focus"), count=6, chars=240),
+        "content_rules": _safe_rules(strategy.get("content_rules"), count=8),
+        "timing_rules": _safe_strings(
+            strategy.get("timing_rules"), count=5, chars=240),
+        "experiments": experiments,
+        "avoid": _safe_strings(strategy.get("avoid"), count=6, chars=240),
+        "confidence": confidence,
+        "limitations": _safe_strings(
+            strategy.get("limitations"), count=6, chars=240),
+    }
+    return result
+
+
+def _strategy_payload() -> dict:
+    path = _latest_strategy_json()
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _strategy_applications_path() -> Path:
+    path = state_dir() / "learning" / "strategy_applications.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _strategy_application_count(strategy_id: str) -> int:
+    if not strategy_id:
+        return 0
+    path = _strategy_applications_path()
+    if not path.exists():
+        return 0
+    count = 0
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("strategy_id") == strategy_id:
+                count += 1
+    except OSError:
+        return 0
+    return count
+
+
+def strategy_status(now: datetime | None = None) -> dict:
+    now = (now or datetime.now(JST)).astimezone(JST)
+    payload = _strategy_payload()
+    if not payload:
+        return {
+            "status": "not_generated",
+            "active": False,
+            "reason": "日次レビューの成功後に生成されます",
+        }
+    try:
+        generated = datetime.fromisoformat(str(payload.get("generated_at") or ""))
+        if generated.tzinfo is None:
+            generated = generated.replace(tzinfo=JST)
+        generated = generated.astimezone(JST)
+    except (TypeError, ValueError):
+        generated = None
+    max_age = max(
+        1, int(os.environ.get("PERFORMANCE_STRATEGY_MAX_AGE_HOURS", "36") or 36))
+    age_hours = (
+        max(0.0, (now - generated).total_seconds() / 3600)
+        if generated else None
+    )
+    active = age_hours is not None and age_hours <= max_age
+    strategy = payload.get("strategy")
+    if not isinstance(strategy, dict):
+        strategy = {}
+    return {
+        "status": "active" if active else "stale",
+        "active": active,
+        "strategy_id": str(payload.get("strategy_id") or ""),
+        "date": str(payload.get("date") or ""),
+        "generated_at": str(payload.get("generated_at") or ""),
+        "age_hours": round(age_hours, 2) if age_hours is not None else None,
+        "max_age_hours": max_age,
+        "confidence": str(strategy.get("confidence") or "low"),
+        "objective": _clip(str(strategy.get("objective") or ""), 400),
+        "tomorrow_focus": _safe_strings(
+            strategy.get("tomorrow_focus"), count=6, chars=240),
+        "log_analysis_status": str(payload.get("log_analysis_status") or "unknown"),
+        "application_count": _strategy_application_count(
+            str(payload.get("strategy_id") or "")),
+        "safety_constraints": payload.get("safety_constraints") or {},
+    }
+
+
+def _record_strategy_application(strategy_id: str, prompt: str) -> None:
+    if not strategy_id:
+        return
+    path = _strategy_applications_path()
+    row = {
+        "applied_at": datetime.now(JST).isoformat(),
+        "strategy_id": strategy_id,
+        "prompt_hash": hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16],
+    }
+    try:
+        rows = []
+        if path.exists():
+            rows = path.read_text(encoding="utf-8").splitlines()[-1999:]
+        rows.append(json.dumps(row, ensure_ascii=False))
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    except OSError:
+        logger.warning("インプレッション方針の適用履歴を保存できません")
+
+
 def update_daily_learning(
     metrics: list[dict],
     *,
@@ -528,9 +705,7 @@ def update_daily_learning(
                         "impression_strategy"]}
         review = OpenAIService().structured(prompt, schema, role=OpenAIRole.ANALYZE,
                                             operation="daily_performance_analysis")
-        if not isinstance(review, dict):
-            review = _empty_review()
-        review.setdefault("impression_strategy", _empty_review()["impression_strategy"])
+        review = _normalize_review(review)
         status = "ok"
         error = ""
         skip_reason = ""
@@ -597,6 +772,11 @@ def update_daily_learning(
                 "budget_and_post_limits_must_remain": True,
             },
         }
+        strategy_payload["strategy_id"] = hashlib.sha256(
+            json.dumps(
+                strategy_payload["strategy"], ensure_ascii=False, sort_keys=True
+            ).encode("utf-8")
+        ).hexdigest()[:16]
         _latest_strategy_json().write_text(
             json.dumps(strategy_payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
@@ -605,6 +785,14 @@ def update_daily_learning(
             _render_strategy_markdown(review, run_date),
             encoding="utf-8",
         )
+        try:
+            from common.operations_alerts import notify_impression_strategy
+            notify_impression_strategy(strategy_payload)
+        except Exception as exc:
+            logger.warning(
+                "インプレッション方針のDiscord通知に失敗（学習は維持）: %s",
+                type(exc).__name__,
+            )
 
     try:
         log_run({
@@ -642,8 +830,9 @@ def load_learning_context(max_chars: int | None = None) -> str:
         return ""
     try:
         sections = []
+        current_status = strategy_status()
         strategy = _latest_strategy_md()
-        if strategy.exists():
+        if current_status.get("active") and strategy.exists():
             sections.append(strategy.read_text(encoding="utf-8").strip())
         sections.append(path.read_text(encoding="utf-8").strip())
         avoid = _latest_avoid_md()
@@ -668,6 +857,9 @@ def with_performance_learning(prompt: str) -> str:
     context = load_learning_context()
     if not context:
         return prompt
+    status = strategy_status()
+    if status.get("active"):
+        _record_strategy_application(str(status.get("strategy_id") or ""), prompt)
     return f"""【過去の投稿実績から得た表現設計メモ】
 {context}
 

@@ -370,6 +370,54 @@ def notify_x_post(record: dict, *, session=requests) -> dict:
     return {"status":"sent","sent":True,"tweet_id":tweet_id}
 
 
+def notify_impression_strategy(payload: dict, *, session=requests) -> dict:
+    """Send one concise daily strategy result; never forward raw logs."""
+    if os.getenv("DISCORD_ALERTS_ENABLED","false").strip().lower() not in TRUE_VALUES:
+        return {"status":"disabled","sent":False}
+    url=_discord_webhook_url()
+    if not url:
+        return {"status":"configuration_error","sent":False}
+    strategy_id=redact_discord_text(payload.get("strategy_id") or "")[:40]
+    strategy=payload.get("strategy") if isinstance(payload.get("strategy"),dict) else {}
+    if not strategy_id:
+        return {"status":"invalid_strategy","sent":False}
+    state_path=state_dir()/"discord_impression_strategy.json"
+    state=_read_json(state_path,{})
+    if state.get("strategy_id")==strategy_id:
+        return {"status":"duplicate","sent":False,"strategy_id":strategy_id}
+    objective=redact_discord_text(strategy.get("objective") or "方針なし")[:500]
+    confidence=redact_discord_text(strategy.get("confidence") or "low")[:20]
+    focus=[
+        redact_discord_text(item)[:240]
+        for item in (strategy.get("tomorrow_focus") or [])[:3]
+    ]
+    lines=[
+        "📈 日次インプレッション改善方針を更新しました",
+        f"目標: {objective}",
+        f"確度: {confidence}",
+    ]
+    if focus:
+        lines.append("重点:")
+        lines.extend(f"• {item}" for item in focus)
+    lines.append("安全審査・予算・投稿上限は変更していません。")
+    request={
+        "username":"finance-narrative review",
+        "allowed_mentions":{"parse":[]},
+        "content":"\n".join(lines)[:1900],
+    }
+    try:
+        response=session.post(url,json=request,timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        return {"status":"delivery_failed","error_type":type(exc).__name__,
+                "sent":False,"strategy_id":strategy_id}
+    _atomic_write(state_path,json.dumps({
+        "strategy_id":strategy_id,
+        "sent_at":datetime.now(JST).isoformat(),
+    },ensure_ascii=False,indent=2)+"\n")
+    return {"status":"sent","sent":True,"strategy_id":strategy_id}
+
+
 def send_discord_alerts(rows: list[dict], *, now: datetime | None=None,
                         session=requests) -> dict:
     """Send only state changes. A failed delivery is retried on the next run."""
