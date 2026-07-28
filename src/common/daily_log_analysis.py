@@ -11,13 +11,16 @@ except ImportError: from common.runtime import JST, log_dir, output_dir, state_d
 SECRET_PATTERNS=(
     re.compile(r"(?i)(api[_ -]?key|token|secret|authorization)(\s*[:=]\s*)([^\s,;]+)"),
     re.compile(r"\b(?:sk|xai|gho)-[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"https://(?:canary\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+"),
 )
 
 
 def redact(value: str) -> str:
     text=value
     text=SECRET_PATTERNS[0].sub(lambda m:f"{m.group(1)}{m.group(2)}<redacted>",text)
-    return SECRET_PATTERNS[1].sub("<redacted>",text)
+    for pattern in SECRET_PATTERNS[1:]:
+        text=pattern.sub("<redacted>",text)
+    return text
 
 
 def _safe_record(row: dict) -> dict:
