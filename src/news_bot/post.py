@@ -726,6 +726,12 @@ def main(mode: str = "image") -> None:
         radar_topics = load_cache()
     except Exception:
         radar_topics = []
+    if radar_topics:
+        try:
+            from common.xai_integration import prioritize_candidates
+            candidates = prioritize_candidates(candidates, radar_topics)
+        except Exception:
+            logger.warning("xAI話題による候補優先順位付けに失敗（元の順序を維持）")
 
     for rank, cand in enumerate(candidates, start=1):
         checked_count += 1
@@ -755,14 +761,18 @@ def main(mode: str = "image") -> None:
         cand_scope = cand_impact.get("market_scope", "-")
         cand_should = cand_impact.get("should_post", False)
 
-        title_lower=cand.title.lower()
-        matched=next((topic for topic in radar_topics if str(topic.get("topic","")).lower() in title_lower or any(str(t).lower() in title_lower for t in topic.get("tickers",[]))),None)
-        cand_impact["x_topic_velocity"] = float((matched or {}).get("velocity_60m",0) or 0)
+        try:
+            from common.xai_integration import match_topic
+            matched=match_topic(cand.title,radar_topics)
+        except Exception:
+            matched=None
+        cand_impact["x_topic_velocity"] = float((matched or {}).get("velocity_score",0) or 0)
         cand_impact["x_topic_acceleration"] = float((matched or {}).get("acceleration_score",0) or 0)
-        cand_impact["news_confirmation_status"] = "confirmed" if matched else "not_radar_sourced"
+        cand_impact["news_confirmation_status"] = "rss_corroborated" if matched else "not_radar_sourced"
         cand_impact["radar_influenced"] = bool(matched)
         cand_impact["xai_signal_used"] = bool(matched)
-        cand_impact["xai_signal_reason"] = "topic_or_ticker_match" if matched else "no_match"
+        cand_impact["xai_signal_reason"] = "safe_priority_tiebreaker" if matched else "no_match"
+        cand_impact["xai_priority_applied"] = bool(matched)
         cand_impact["radar_run_id"] = (matched or {}).get("radar_run_id")
         cand_impact["radar_topic"] = (matched or {}).get("topic")
         cand_impact["xai_cost_attribution_usd"] = (matched or {}).get("xai_cost_attribution_usd",0)
@@ -782,6 +792,16 @@ def main(mode: str = "image") -> None:
             continue
         if duplicate["status"] == "warn":
             logger.warning("類似投稿警告（別論点として審査継続）: similarity=%.3f", duplicate["similarity"])
+        if matched:
+            try:
+                from common.xai_integration import record_downstream_event
+                record_downstream_event(
+                    str(matched.get("radar_run_id") or ""),
+                    "news_candidate",
+                    candidate_id=f"{cand.url}|{cand.title}",
+                )
+            except Exception:
+                logger.warning("xAI候補化イベントの記録に失敗（選定は継続）")
 
         # 通常ゲートを落ちた候補も、長時間無投稿時に備えて最良1件だけ保持する。
         # AI評価そのものが失敗した候補は、品質を判断できないため対象外。

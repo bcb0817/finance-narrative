@@ -38,18 +38,24 @@ def xai_roi_report(days: int = 30) -> dict:
     latest={}
     for row in load_snapshots():
         tid=str(row.get("tweet_id") or "")
-        if row.get("stage")=="24h" and row.get("status")=="collected": latest[tid]=row
+        stage=str(row.get("stage") or "")
+        if stage in {"1h","6h","24h"} and row.get("status")=="collected":
+            latest[(tid,stage)]=row
     influenced=[row for row in posts if row.get("radar_influenced") or row.get("xai_signal_used")]
     baseline=[row for row in posts if row not in influenced]
-    def mean_impressions(group):
-        values=[float(latest[str(row.get("tweet_id"))]["impressions"]) for row in group
-                if str(row.get("tweet_id")) in latest and latest[str(row.get("tweet_id"))].get("impressions") is not None]
+    def mean_impressions(group,stage):
+        values=[float(latest[(str(row.get("tweet_id")),stage)]["impressions"]) for row in group
+                if (str(row.get("tweet_id")),stage) in latest
+                and latest[(str(row.get("tweet_id")),stage)].get("impressions") is not None]
         return round(sum(values)/len(values),2) if values else None
     usage=usage_summary(days=days); cost=float(usage.get("total_effective_cost_usd") or 0)
-    x_imp=mean_impressions(influenced); b_imp=mean_impressions(baseline)
+    x_imp=mean_impressions(influenced,"24h"); b_imp=mean_impressions(baseline,"24h")
+    x_1h=mean_impressions(influenced,"1h"); b_1h=mean_impressions(baseline,"1h")
     return {
         "days":days,"xai_influenced_posts":len(influenced),"baseline_posts":len(baseline),
+        "xai_mean_1h_impressions":x_1h,"baseline_mean_1h_impressions":b_1h,
         "xai_mean_24h_impressions":x_imp,"baseline_mean_24h_impressions":b_imp,
+        "incremental_1h_impressions":round(x_1h-b_1h,2) if x_1h is not None and b_1h is not None else None,
         "incremental_impressions":round(x_imp-b_imp,2) if x_imp is not None and b_imp is not None else None,
         "effective_cost_usd":round(cost,6),
         "cost_per_influenced_post_usd":round(cost/len(influenced),6) if influenced else None,

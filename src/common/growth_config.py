@@ -22,7 +22,7 @@ def effective_radar_status(schedule: dict[str, Any] | None = None) -> dict[str, 
         from xai_radar import usage_summary
     usage = usage_summary()
     within_budget = usage["remaining_usd"] > 0
-    within_daily_limit = usage["daily_calls"] < int(os.getenv("XAI_MAX_SEARCH_CALLS_PER_DAY", "6"))
+    within_daily_limit = usage["daily_calls"] < int(usage.get("daily_limit") or 2)
     effective = all((configured, schedule_enabled, key_configured, within_budget, within_daily_limit))
     reasons = []
     if not configured: reasons.append("feature_flag_disabled")

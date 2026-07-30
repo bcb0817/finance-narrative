@@ -40,8 +40,26 @@ class XaiMediaTests(unittest.TestCase):
     def test_missing_key_is_safe_skip(self):
         with patch.dict(os.environ,{"XAI_API_KEY":""}): self.assertEqual(refresh()["status"],"skipped")
     def test_daily_limit_and_budget(self):
-        with patch.dict(os.environ,{"XAI_MAX_SEARCH_CALLS_PER_DAY":"1"}):
+        with patch.dict(os.environ,{"XAI_MAX_SEARCH_CALLS_PER_DAY":"1",
+                                    "XAI_EVENT_BURST_ENABLED":"false"}):
             refresh(client=FakeClient(self.sample())); self.assertEqual(refresh(client=FakeClient(self.sample()))["reason"],"daily_limit")
+    def test_daily_unique_post_cap_reduces_second_search_output(self):
+        topics=[]
+        for index in range(5):
+            topics.append({"topic":f"topic-{index}","tickers":[],"category":"other","summary":"",
+                "observed_mention_count":1,"velocity_score":1,"acceleration_score":1,
+                "representative_posts":[
+                    {"post_id":f"{index}-a","url":"https://x.com/a","username":"a","excerpt":"a"},
+                    {"post_id":f"{index}-b","url":"https://x.com/b","username":"b","excerpt":"b"},
+                ],"representative_accounts":[],"source_reliability":"unknown",
+                "primary_source_available":False,"source_confirmation":"x_discussion"})
+        payload=json.dumps({"topics":topics})
+        with patch.dict(os.environ,{"XAI_MAX_SEARCH_CALLS_PER_DAY":"2","XAI_MAX_UNIQUE_POSTS_PER_DAY":"15"}):
+            first=FakeClient(payload); second=FakeClient(payload)
+            self.assertEqual(refresh(client=first)["status"],"ok")
+            self.assertEqual(refresh(client=second)["status"],"ok")
+            self.assertEqual(second.responses.calls[0]["text"]["format"]["schema"]["properties"]["topics"]["items"]["properties"]["representative_posts"]["maxItems"],1)
+            self.assertEqual(usage_summary()["daily_unique_posts"],15)
     def test_style_weights_and_no_repeat(self):
         self.assertEqual(set(load_weights()),set(STYLES)); self.assertNotEqual(choose_style(suggested="comparison",recent_styles=["comparison"]),"comparison")
         self.assertEqual(enforce_hashtag_limit("本文 #AI #株").count("#"),1)

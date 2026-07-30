@@ -113,6 +113,14 @@ def load_schedule() -> dict:
     sched["radar"]["enabled"] = bool(sched["radar"].get("enabled", False)) and (
         os.environ.get("XAI_ENABLED", "false").lower() in ("1", "true", "yes")) and (
         os.environ.get("XAI_X_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes"))
+    if sched["radar"]["enabled"]:
+        try:
+            from common.xai_radar import radar_plan
+            plan = radar_plan()
+            sched["radar"]["type"] = "daily_jst_times"
+            sched["radar"]["times"] = sorted(set(plan.get("windows_jst") or ["21:00","22:30"]))
+        except Exception as exc:
+            print(f"[WARN] xAIイベント日スケジュール判定に失敗（通常2枠を維持）: {type(exc).__name__}")
     radar_interval = os.environ.get("XAI_SEARCH_INTERVAL_MINUTES", "60")
     if radar_interval.isdigit() and int(radar_interval) > 0: sched["radar"]["every_minutes"] = int(radar_interval)
     sched["fx-monitor"]["enabled"] = bool(sched["fx-monitor"].get("enabled", True)) and (

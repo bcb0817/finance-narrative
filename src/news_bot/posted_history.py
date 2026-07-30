@@ -207,6 +207,7 @@ def add_posted_entry(
             "radar_influenced": impact.get("radar_influenced", False),
             "xai_signal_used": impact.get("xai_signal_used", False),
             "xai_signal_reason": impact.get("xai_signal_reason"),
+            "xai_priority_applied": impact.get("xai_priority_applied", False),
             "radar_run_id": impact.get("radar_run_id"),
             "radar_topic": impact.get("radar_topic"),
             "xai_cost_attribution_usd": impact.get("xai_cost_attribution_usd", 0),
@@ -233,4 +234,14 @@ def add_posted_entry(
         mode=mode,
         extra=extra,
     )
+    if impact and impact.get("radar_run_id"):
+        try:
+            from common.xai_integration import record_downstream_event
+            record_downstream_event(
+                str(impact.get("radar_run_id") or ""),
+                "post_created",
+                tweet_id=str(tweet_id),
+            )
+        except Exception:
+            logger.warning("xAI投稿成果イベントの記録に失敗（投稿履歴は維持）")
     logger.info(f"投稿履歴を保存しました: {item.url} (tweet_id={tweet_id})")

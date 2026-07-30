@@ -15,12 +15,12 @@ def _queue_dir(create=False) -> Path:
     if create: path.mkdir(parents=True,exist_ok=True)
     return path
 def queue_path() -> Path: return _queue_dir()/"pending.jsonl"
-def _drafts(topic: dict,post: dict) -> list[dict]:
+def _drafts(topic: dict,post: dict, *, generate_ai: bool=True) -> list[dict]:
     base=str(topic.get("topic","")).strip(); misconception=str(topic.get("possible_misconception","")).strip()
     fallback=[{"type":"why_it_matters","text":f"重要なのは見出しそのものより、{base}が市場の前提をどう変えるかです。一次情報と次の確認材料を分けて見たい。"},
             {"type":"second_order_effect","text":f"直接の反応だけでなく、{base}が関連企業の需要・コスト・投資判断へ波及するかが次の焦点です。"},
             {"type":"contrarian_or_missing_point","text":misconception or f"議論で抜けやすいのは、{base}の事実確認と市場解釈を分ける視点です。"}]
-    if os.getenv("QUOTE_DRAFT_AI_ENABLED","true").lower() not in ("1","true","yes"): return fallback
+    if not generate_ai or os.getenv("QUOTE_DRAFT_AI_ENABLED","true").lower() not in ("1","true","yes"): return fallback
     try:
         try:
             from openai_config import OpenAIRole
@@ -36,7 +36,10 @@ def _drafts(topic: dict,post: dict) -> list[dict]:
     except Exception:
         return fallback
 
-def enqueue_from_topics(topics: list[dict],now: datetime|None=None) -> list[dict]:
+def enqueue_from_topics(
+    topics: list[dict],now: datetime|None=None, *,
+    generate_ai_drafts: bool=True,
+) -> list[dict]:
     if os.getenv("QUOTE_QUEUE_ENABLED","true").lower() not in ("1","true","yes"): return []
     now=now or datetime.now(JST); created=[]; path=_queue_dir(create=True)/"pending.jsonl"; existing=path.read_text(encoding="utf-8") if path.exists() else ""
     existing_rows=[]
@@ -54,7 +57,7 @@ def enqueue_from_topics(topics: list[dict],now: datetime|None=None) -> list[dict
                  "topic":topic.get("topic",""),"detected_topic":topic.get("topic",""),"tickers":topic.get("tickers",[]),"why_relevant":topic.get("consensus_view","") or topic.get("dissenting_view",""),
                  "source_reliability":topic.get("source_reliability","unknown"),"primary_source":bool(topic.get("primary_source_available",False)),
                  "risk_flags":["x_information_unverified"] if topic.get("news_confirmation_status")!="confirmed" else [],
-                 "comment_drafts":_drafts(topic,post),"created_at":now.isoformat(),"expires_at":(now+timedelta(hours=24)).isoformat(),"status":"pending"}
+                 "comment_drafts":_drafts(topic,post,generate_ai=generate_ai_drafts),"created_at":now.isoformat(),"expires_at":(now+timedelta(hours=24)).isoformat(),"status":"pending"}
             created.append(row)
     if created:
         with path.open("a",encoding="utf-8",newline="\n") as fh:

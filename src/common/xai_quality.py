@@ -52,6 +52,8 @@ def _attributed_posts(cutoff: datetime) -> list[dict]:
 
 
 def cost_breakdown(days: int = 30) -> dict:
+    from common.metrics_collector import load_snapshots
+    from common.xai_integration import downstream_events
     cutoff = datetime.now(JST) - timedelta(days=max(1, days))
     rows = []
     for row in _jsonl(state_dir() / "xai" / "api_usage.jsonl"):
@@ -67,14 +69,37 @@ def cost_breakdown(days: int = 30) -> dict:
     total_cost = sum(_cost(r) for r in rows)
     topics = sum(int(r.get("topics_returned", r.get("topic_count", 0)) or 0) for r in rows)
     useful = sum(int(r.get("useful_topics", 0) or 0) for r in rows)
-    candidates = sum(int(r.get("news_candidates_created", 0) or 0) for r in rows)
-    attributed_posts = _attributed_posts(cutoff)
     run_ids = {str(row.get("run_id")) for row in rows if row.get("run_id")}
+    downstream = [
+        event for event in downstream_events(days)
+        if str(event.get("run_id") or "") in run_ids
+    ]
+    candidate_keys = {
+        (str(event.get("run_id") or ""), str(event.get("candidate_hash") or ""))
+        for event in downstream
+        if event.get("event") == "news_candidate" and event.get("candidate_hash")
+    }
+    legacy_candidates = sum(int(r.get("news_candidates_created", 0) or 0) for r in rows)
+    candidates = max(len(candidate_keys), legacy_candidates)
+    attributed_posts = _attributed_posts(cutoff)
     matched_posts = [
         row for row in attributed_posts
         if str(row.get("radar_run_id")) in run_ids
     ]
     posts = len({str(row.get("tweet_id")) for row in matched_posts if row.get("tweet_id")})
+    post_ids = {
+        str(row.get("tweet_id")) for row in matched_posts if row.get("tweet_id")
+    }
+    snapshots = load_snapshots()
+    metrics_by_stage = {}
+    for stage in ("1h", "6h", "24h"):
+        metrics_by_stage[stage] = len({
+            str(row.get("tweet_id"))
+            for row in snapshots
+            if str(row.get("tweet_id")) in post_ids
+            and row.get("stage") == stage
+            and row.get("status", "collected") == "collected"
+        })
     attempts = sum(int(r.get("attempted_tool_calls", r.get("tool_calls", 0)) or 0) for r in rows)
     successful_tools = sum(int(r.get("successful_tool_calls", r.get("tool_calls", 0)) or 0) for r in successes)
     attributable = [
@@ -95,10 +120,11 @@ def cost_breakdown(days: int = 30) -> dict:
         "cost_per_run_usd": round(total_cost/len(rows), 6) if rows else None,
         "cost_per_success_usd": round(total_cost/len(successes), 6) if successes else None,
         "topics_returned": topics, "useful_topics": useful,
+        "quote_candidates_created": sum(
+            int(row.get("quote_candidates_created", 0) or 0) for row in rows),
         "news_candidates_created": candidates, "posts_created": posts,
-        "post_ids": sorted({
-            str(row.get("tweet_id")) for row in matched_posts if row.get("tweet_id")
-        }),
+        "post_ids": sorted(post_ids),
+        "metrics_by_stage": metrics_by_stage,
         "attribution_source": "posted_history.radar_run_id",
         "cost_per_useful_topic_usd": round(total_cost/useful, 6) if useful else None,
         "cost_per_news_candidate_usd": round(total_cost/candidates, 6) if candidates else None,
@@ -126,7 +152,8 @@ def funnel(days: int = 30) -> dict:
         "news_candidates": value["news_candidates_created"],
         "post_candidates": value["posts_created"],
         "actual_posts": value["posts_created"],
-        "metrics_1h": 0,
-        "metrics_24h": 0,
+        "metrics_1h": value["metrics_by_stage"]["1h"],
+        "metrics_6h": value["metrics_by_stage"]["6h"],
+        "metrics_24h": value["metrics_by_stage"]["24h"],
         "note": "Missing historical attribution remains null/zero; it is not inferred.",
     }

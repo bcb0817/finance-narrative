@@ -89,10 +89,24 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).lower() in {"1", "true", "yes", "on"}
 
 
+def _watch_handles() -> list[str]:
+    configured = [
+        item.strip().lstrip("@")
+        for item in os.getenv("XAI_RADAR_WATCH_HANDLES", "").split(",")
+        if item.strip()
+    ]
+    path = ROOT / "config" / "xai_watch_accounts.json"
+    value = _json(path, {})
+    for item in value.get("accounts", []) if isinstance(value, dict) else []:
+        if isinstance(item, dict) and item.get("enabled") and item.get("username"):
+            configured.append(str(item["username"]).strip().lstrip("@"))
+    return list(dict.fromkeys(configured))[:5]
+
+
 def _cache_key() -> str:
     value = {
-        "version": 2,
-        "watch": os.getenv("XAI_RADAR_WATCH_HANDLES", ""),
+        "version": 3,
+        "watch": _watch_handles(),
         "topics": _env_int("XAI_RADAR_MAX_TOPICS", 5),
         "posts": _env_int("XAI_RADAR_MAX_POSTS_PER_TOPIC", 2),
         "accounts": _env_int("XAI_RADAR_MAX_ACCOUNTS_PER_TOPIC", 2),
@@ -107,12 +121,51 @@ def _event_mode(now: datetime | None = None) -> bool:
     try:
         return datetime.fromisoformat(_path("event_mode_until.txt").read_text(encoding="utf-8").strip()) > current
     except (OSError, ValueError):
-        return False
+        pass
+    return (
+        _env_bool("XAI_EVENT_BURST_ENABLED", False)
+        and bool(important_event_status(current)["active"])
+    )
+
+
+def important_event_status(now: datetime | None = None) -> dict:
+    current = now or _now()
+    try:
+        from zoneinfo import ZoneInfo
+        et_date = current.astimezone(ZoneInfo("America/New_York")).date()
+    except Exception:
+        et_date = current.date()
+    events = []
+    try:
+        from weekly_bot.weekly_events import _macro_events
+        important = (
+            "FOMC", "CPI", "雇用統計", "PCE", "GDP",
+            "小売売上高", "耐久財受注",
+        )
+        events = [
+            str(item.get("title") or "")
+            for item in _macro_events()
+            if str(item.get("date") or "") == et_date.isoformat()
+            and any(key in str(item.get("title") or "") for key in important)
+        ]
+    except Exception:
+        events = []
+    return {
+        "active": bool(events),
+        "market_date_et": et_date.isoformat(),
+        "events": events,
+        "source": "official_static_calendar",
+    }
 
 
 def daily_limit(now: datetime | None = None) -> int:
     key = "XAI_EVENT_MAX_SEARCH_CALLS_PER_DAY" if _event_mode(now) else "XAI_MAX_SEARCH_CALLS_PER_DAY"
     return max(1, _env_int(key, 4 if _event_mode(now) else 2))
+
+
+def _daily_unique_post_limit() -> int:
+    """Keep retained X Search examples within the read-only daily review allowance."""
+    return max(1, _env_int("XAI_MAX_UNIQUE_POSTS_PER_DAY", 15))
 
 
 def _cache() -> dict:
@@ -180,43 +233,70 @@ def _cost(row: dict) -> float:
 def usage_summary(now: datetime | None = None, days: int = 31) -> dict:
     current = now or _now()
     cutoff = current - timedelta(days=max(1, days))
-    rows = []
+    dated_rows = []
     for row in _jsonl(_path("api_usage.jsonl")):
         try:
-            if datetime.fromisoformat(str(row.get("timestamp"))) >= cutoff:
-                rows.append(row)
+            recorded_at = datetime.fromisoformat(str(row.get("timestamp")))
+            if recorded_at.tzinfo is None:
+                recorded_at = recorded_at.replace(tzinfo=current.tzinfo)
+            dated_rows.append((recorded_at, row))
         except (TypeError, ValueError):
             pass
-    today = [row for row in rows if str(row.get("timestamp", "")).startswith(current.date().isoformat())]
+    rows = [
+        row for recorded_at, row in dated_rows
+        if recorded_at >= cutoff
+    ]
+    month_prefix = current.strftime("%Y-%m")
+    month_rows = [
+        row for _, row in dated_rows
+        if str(row.get("timestamp", "")).startswith(month_prefix)
+    ]
+    today = [
+        row for _, row in dated_rows
+        if str(row.get("timestamp", "")).startswith(current.date().isoformat())
+    ]
     successes = [row for row in rows if row.get("status") == "success" or row.get("success") is True]
     total = sum(_cost(row) for row in rows)
+    monthly_total = sum(_cost(row) for row in month_rows)
     effective=round(total,6)
+    monthly_effective=round(monthly_total,6)
+    budget=_env_float("XAI_MONTHLY_BUDGET_USD",5.0)
     return {
         "calls": len(rows),
-        "monthly_calls":len(rows),
+        "monthly_calls":len(month_rows),
         "daily_calls": len(today),
         "successful_calls": len(successes),
         "daily_limit": daily_limit(current),
+        "daily_unique_posts": sum(int(row.get("unique_posts_returned") or 0) for row in today),
+        "daily_unique_post_limit": _daily_unique_post_limit(),
         "reported_cost_usd": round(sum(float(row["reported_cost_usd"]) for row in rows if row.get("reported_cost_usd") is not None), 6),
         "estimated_only_cost_usd": round(sum(float(row.get("estimated_cost_usd") or 0) for row in rows if row.get("reported_cost_usd") is None), 6),
         "total_effective_cost_usd": effective,
-        "spent_usd":effective,
+        "monthly_effective_cost_usd":monthly_effective,
+        "spent_usd":monthly_effective,
         "average_cost_per_success_usd": round(total / len(successes), 6) if successes else None,
-        "budget_usd":_env_float("XAI_MONTHLY_BUDGET_USD",5.0),
-        "remaining_usd":round(max(0.0,_env_float("XAI_MONTHLY_BUDGET_USD",5.0)-total),6),
+        "budget_usd":budget,
+        "remaining_usd":round(max(0.0,budget-monthly_total),6),
     }
 
 
 def _can_call(now: datetime | None = None) -> tuple[bool, str]:
     if not _env_bool("XAI_ENABLED", True):
         return False, "disabled"
+    if not _env_bool("XAI_X_SEARCH_ENABLED", True):
+        return False, "x_search_disabled"
     if not os.getenv("XAI_API_KEY"):
         return False, "missing_api_key"
     usage = usage_summary(now)
     if usage["daily_calls"] >= usage["daily_limit"]:
         return False, "daily_limit"
-    if usage["total_effective_cost_usd"] >= _env_float("XAI_MONTHLY_BUDGET_USD", 5.0):
-        return False, "monthly_budget"
+    projected=max(
+        _env_float("XAI_TARGET_COST_PER_CALL_USD",0.10),
+        float(usage.get("average_cost_per_success_usd") or 0),
+        _env_float("XAI_SEARCH_TOOL_COST",0.005),
+    )
+    if usage["remaining_usd"] < projected:
+        return False, "monthly_budget_reserve"
     return True, ""
 
 
@@ -256,7 +336,8 @@ def _parse_topics(raw: str, now: datetime | None = None) -> list[dict]:
     return result
 
 
-def _schema() -> dict:
+def _schema(max_posts_per_topic: int = 2) -> dict:
+    max_posts_per_topic = max(1, min(2, int(max_posts_per_topic)))
     topic = {
         "type": "object",
         "additionalProperties": False,
@@ -274,7 +355,7 @@ def _schema() -> dict:
             "observed_mention_count": {"type": "integer", "minimum": 0},
             "velocity_score": {"type": "number", "minimum": 0, "maximum": 10},
             "acceleration_score": {"type": "number", "minimum": 0, "maximum": 10},
-            "representative_posts": {"type": "array", "maxItems": 2, "items": {
+            "representative_posts": {"type": "array", "maxItems": max_posts_per_topic, "items": {
                 "type": "object","additionalProperties":False,
                 "required":["post_id","url","username","excerpt"],
                 "properties":{"post_id":{"type":"string"},"url":{"type":"string"},
@@ -328,13 +409,22 @@ def refresh(*, client: Any = None, now: datetime | None = None, force: bool = Fa
         topics = load_cache(current, record_hit=True)
         if topics:
             return {"status": "cached", "topics": topics, "cache": cache_status()}
+    usage_before = usage_summary(current)
+    remaining_unique_posts = max(
+        0,
+        _daily_unique_post_limit() - int(usage_before["daily_unique_posts"]),
+    )
+    if remaining_unique_posts == 0:
+        return {"status": "skipped", "reason": "daily_unique_post_limit", "topics": load_cache(current)}
+    max_topics = max(1, _env_int("XAI_RADAR_MAX_TOPICS", 5))
+    max_posts_per_topic = min(2, max(1, remaining_unique_posts // max_topics))
     run_id = uuid.uuid4().hex
     model = os.getenv("XAI_MODEL", "grok-4-1-fast")
     response = None
     started = time.perf_counter()
     try:
         api = client or OpenAI(api_key=os.environ["XAI_API_KEY"], base_url=os.getenv("XAI_BASE_URL", BASE_URL), max_retries=0)
-        handles = [x.strip().lstrip("@") for x in os.getenv("XAI_RADAR_WATCH_HANDLES", "").split(",") if x.strip()][:5]
+        handles = _watch_handles()
         tool: dict[str, Any] = {"type": "x_search", "enable_image_understanding": False, "enable_video_understanding": False}
         if handles:
             tool["allowed_x_handles"] = handles
@@ -347,10 +437,16 @@ def refresh(*, client: Any = None, now: datetime | None = None, force: bool = Fa
             model=model,
             input=prompt,
             tools=[tool],
-            text=_schema(),
+            text=_schema(max_posts_per_topic),
             max_output_tokens=_env_int("XAI_MAX_OUTPUT_TOKENS", 1400),
         )
         topics = _parse_topics(str(response.output_text), current)
+        retained = 0
+        for topic in topics:
+            available = max(0, remaining_unique_posts - retained)
+            posts = list(topic.get("representative_posts") or [])[:available]
+            topic["representative_posts"] = posts
+            retained += len(posts)
         usage = _usage(response)
         effective = usage["reported_cost_usd"] if usage.get("reported_cost_usd") is not None else usage["estimated_cost_usd"]
         allocation = round(float(effective) / len(topics), 6) if topics else 0.0
@@ -364,11 +460,21 @@ def refresh(*, client: Any = None, now: datetime | None = None, force: bool = Fa
         })
         for topic in topics:
             _append(_path("topic_radar.jsonl"), {"timestamp": current.isoformat(), **topic})
+        quote_candidates = []
+        try:
+            from common.quote_queue import enqueue_from_topics
+            quote_candidates = enqueue_from_topics(
+                topics, current, generate_ai_drafts=False)
+        except Exception:
+            quote_candidates = []
         row = {"timestamp": current.isoformat(), "run_id": run_id, "model": model, "operation": "x_topic_radar",
                "status": "success", "success": True, "topic_count": len(topics),
+               "unique_posts_returned": retained,
+               "daily_unique_post_limit": _daily_unique_post_limit(),
                "request_id": str(getattr(response, "id", "") or ""),
                "topics_returned": len(topics),
                "useful_topics": sum(bool(topic.get("primary_source_available")) for topic in topics),
+               "quote_candidates_created": len(quote_candidates),
                "news_candidates_created": 0, "posts_created": 0, "post_ids": [],
                "cache_hit": False, "failure_stage": None, "error_type": None,
                "latency_ms": round((time.perf_counter() - started) * 1000), **usage}
@@ -377,13 +483,17 @@ def refresh(*, client: Any = None, now: datetime | None = None, force: bool = Fa
     except Exception as exc:
         row = {"timestamp": current.isoformat(), "run_id": run_id, "model": model, "operation": "x_topic_radar",
                "status": "failed", "success": False, "error_type": type(exc).__name__,
+               "unique_posts_returned": 0,
+               "daily_unique_post_limit": _daily_unique_post_limit(),
                "request_id": str(getattr(response, "id", "") or ""),
                "topics_returned": 0, "useful_topics": 0,
                "news_candidates_created": 0, "posts_created": 0, "post_ids": [],
                "cache_hit": False, "failure_stage": "request_or_parse",
                "latency_ms": round((time.perf_counter() - started) * 1000), **_usage(response)}
         _append(_path("api_usage.jsonl"), row)
-        return {"status": "fallback", "reason": type(exc).__name__, "topics": list(_cache().get("topics") or [])}
+        fallback = list(_cache().get("topics") or []) if _env_bool("XAI_FAIL_OPEN", True) else []
+        return {"status": "fallback" if fallback else "error",
+                "reason": type(exc).__name__, "topics": fallback}
 
 
 def topic_velocity(topic: str | int | float = "", ticker: str | int | float = "") -> dict | None:
@@ -407,9 +517,14 @@ def topic_velocity(topic: str | int | float = "", ticker: str | int | float = ""
 def radar_plan(now: datetime | None = None) -> dict:
     current = now or _now()
     usage = usage_summary(current)
+    event = important_event_status(current)
     return {
         "mode": "event" if _event_mode(current) else "normal",
-        "windows_jst": ["21:00", "22:30"],
+        "windows_jst": (
+            ["00:00", "06:00", "21:00", "22:30"]
+            if _event_mode(current) else ["21:00", "22:30"]
+        ),
+        "important_event": event,
         "calls_used": usage["daily_calls"],
         "calls_remaining": max(0, daily_limit(current) - usage["daily_calls"]),
         "daily_limit": daily_limit(current),
@@ -417,6 +532,8 @@ def radar_plan(now: datetime | None = None) -> dict:
         "max_topics": _env_int("XAI_RADAR_MAX_TOPICS", 5),
         "max_posts_per_topic": _env_int("XAI_RADAR_MAX_POSTS_PER_TOPIC", 2),
         "max_accounts_per_topic": _env_int("XAI_RADAR_MAX_ACCOUNTS_PER_TOPIC", 2),
+        "daily_unique_post_limit": _daily_unique_post_limit(),
+        "daily_unique_posts_used": usage["daily_unique_posts"],
     }
 
 
@@ -433,6 +550,7 @@ def status() -> dict:
     allowed, reason = _can_call()
     return {
         "enabled": _env_bool("XAI_ENABLED", True),
+        "x_search_enabled": _env_bool("XAI_X_SEARCH_ENABLED", True),
         "api_key_configured": bool(os.getenv("XAI_API_KEY")),
         "model": os.getenv("XAI_MODEL", "grok-4-1-fast"),
         "ready": allowed,
