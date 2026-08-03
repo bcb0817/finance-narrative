@@ -1159,6 +1159,11 @@ def cmd_impression_strategy_status() -> None:
     _print_json(strategy_status())
 
 
+def cmd_daily_goal_status() -> None:
+    from common.daily_post_goal import goal_status
+    _print_json(goal_status())
+
+
 def cmd_metrics_quality(command: str, *, days: int = 7) -> None:
     from common.metrics_quality import missed_items, stage_status
     value = missed_items() if command == "metrics-missed" else stage_status(days=days)
@@ -1412,6 +1417,10 @@ def main() -> None:
         "impression-strategy-status",
         help="ChatGPTの日次インプレッション改善方針と適用回数",
     )
+    sub.add_parser(
+        "daily-goal-status",
+        help="Daily 20-post target, achievement rate, and bounded auto-tuning",
+    )
     sub.add_parser("metrics-status", help="Metrics collection status")
     sub.add_parser("metrics-stage-status", help="Stage-level metrics status")
     sub.add_parser("metrics-missed", help="Classified missed metrics")
@@ -1553,6 +1562,7 @@ def main() -> None:
         )
     elif args.cmd == "rss-status": cmd_rss_status()
     elif args.cmd == "impression-strategy-status": cmd_impression_strategy_status()
+    elif args.cmd == "daily-goal-status": cmd_daily_goal_status()
     elif args.cmd == "xai-smoke":
         print("[xai-smoke] config-only dry-run（検索・投稿なし）"); cmd_xai_status()
     elif args.cmd == "config-status": cmd_config_status()

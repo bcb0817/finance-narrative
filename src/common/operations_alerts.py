@@ -482,6 +482,17 @@ def notify_impression_strategy(payload: dict, *, session=requests) -> dict:
         f"目標: {objective}",
         f"確度: {confidence}",
     ]
+    goal=payload.get("daily_goal") if isinstance(payload.get("daily_goal"),dict) else {}
+    if goal:
+        lines.append(
+            f"投稿目標: {int(goal.get('completed_count') or 0)}/"
+            f"{int(goal.get('target') or 20)} "
+            f"(不足 {int(goal.get('shortfall') or 0)})"
+        )
+        adjustment=goal.get("program_adjustment") or {}
+        lines.append(
+            f"自動調整: {redact_discord_text(adjustment.get('status') or 'not_needed')}"
+        )
     if focus:
         lines.append("重点:")
         lines.extend(f"• {item}" for item in focus)

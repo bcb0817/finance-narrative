@@ -635,7 +635,14 @@ NEWS_BOT_NARRATIVE_THRESHOLD = _env_int("NEWS_NARRATIVE_THRESHOLD", 7)
 NEWS_BOT_THEME_THRESHOLD = _env_int("NEWS_THEME_THRESHOLD", 6)
 # safety.py の既定(7)を .env で上書き（既定6=緩め）
 NEWS_BOT_POST_VALUE_THRESHOLD = _env_int("NEWS_POST_VALUE_THRESHOLD", 6)
-NEWS_IDLE_FALLBACK_HOURS = max(0, _env_int("NEWS_IDLE_FALLBACK_HOURS", 3))
+try:
+    from common.daily_post_goal import effective_int as _goal_effective_int
+except ImportError:  # pragma: no cover
+    from daily_post_goal import effective_int as _goal_effective_int
+
+NEWS_IDLE_FALLBACK_HOURS = max(
+    0, _goal_effective_int("NEWS_IDLE_FALLBACK_HOURS", 3)
+)
 
 
 def idle_fallback_allowed(impact: dict, title: str) -> bool:

@@ -11,6 +11,7 @@ from common.openai_config import OpenAIRole
 from common.openai_service import OpenAIService
 from common.openai_service import DailyLimitError
 from common import performance_learning
+from common import daily_post_goal
 from market_map import generate_market_map_post
 
 
@@ -75,6 +76,7 @@ class DailyReviewRegressionTests(unittest.TestCase):
         }]
         with tempfile.TemporaryDirectory() as temp, \
             patch.object(performance_learning,"_root",return_value=Path(temp)), \
+            patch.object(daily_post_goal,"state_dir",return_value=Path(temp)/"state"), \
             patch.object(performance_learning.logger,"exception") as logged_exception:
             with patch("common.openai_service.OpenAIService") as service_class:
                 service_class.return_value.structured.side_effect = DailyLimitError(

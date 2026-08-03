@@ -1,0 +1,219 @@
+"""Daily X-post goal tracking and bounded, reversible volume tuning."""
+from __future__ import annotations
+
+import json
+import os
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from common.runtime import JST, state_dir
+
+
+TRUE_VALUES = {"1", "true", "yes", "on"}
+TUNABLE_DEFAULTS = {
+    "NEWS_IDLE_FALLBACK_HOURS": 3,
+    "QUIET_MIN_GAP_MINUTES": 60,
+    "QUIET_MAX_GAP_MINUTES": 120,
+}
+TUNABLE_BOUNDS = {
+    "NEWS_IDLE_FALLBACK_HOURS": (1, 3),
+    "QUIET_MIN_GAP_MINUTES": (45, 60),
+    "QUIET_MAX_GAP_MINUTES": (75, 120),
+}
+MISSED_STEPS = {
+    "NEWS_IDLE_FALLBACK_HOURS": -1,
+    "QUIET_MIN_GAP_MINUTES": -5,
+    "QUIET_MAX_GAP_MINUTES": -10,
+}
+PROTECTED_CONTROLS = (
+    "DAILY_POST_LIMIT",
+    "HOURLY_POST_LIMIT",
+    "X_WRITE_MONTHLY_BUDGET_USD",
+    "NEWS_POST_VALUE_THRESHOLD",
+    "NEWS_RELEVANCE_THRESHOLD",
+    "safety_review",
+    "fact_confirmation",
+    "duplicate_prevention",
+)
+
+
+def daily_target() -> int:
+    try:
+        return max(1, int(os.getenv("DAILY_POST_TARGET", "20") or 20))
+    except ValueError:
+        return 20
+
+
+def _learning_dir() -> Path:
+    path = state_dir() / "learning"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _policy_path() -> Path:
+    return _learning_dir() / "daily_post_goal_policy.json"
+
+
+def _reviews_path() -> Path:
+    return _learning_dir() / "daily_post_goal_reviews.jsonl"
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def _posted_rows() -> list[dict[str, Any]]:
+    value = _read_json(state_dir() / "posted_history.json", [])
+    return value if isinstance(value, list) else []
+
+
+def _parse_posted_at(row: dict[str, Any]) -> datetime | None:
+    try:
+        value = datetime.fromisoformat(str(row.get("posted_at") or ""))
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=JST)
+    return value.astimezone(JST)
+
+
+def post_count(day: date) -> int:
+    ids: set[str] = set()
+    anonymous = 0
+    for row in _posted_rows():
+        posted = _parse_posted_at(row)
+        if posted is None or posted.date() != day:
+            continue
+        tweet_id = str(row.get("tweet_id") or "").strip()
+        if tweet_id:
+            ids.add(tweet_id)
+        else:
+            anonymous += 1
+    return len(ids) + anonymous
+
+
+def _current_values() -> dict[str, int]:
+    stored = _read_json(_policy_path(), {})
+    values = stored.get("effective_values", {}) if isinstance(stored, dict) else {}
+    result: dict[str, int] = {}
+    for name, default in TUNABLE_DEFAULTS.items():
+        try:
+            base = int(os.getenv(name, "") or default)
+            result[name] = int(values.get(name, base))
+        except (TypeError, ValueError):
+            result[name] = default
+    return result
+
+
+def effective_int(name: str, default: int) -> int:
+    """Read a runtime value, allowing only the explicit volume-tuning list."""
+    if name not in TUNABLE_DEFAULTS:
+        try:
+            return int(os.getenv(name, "") or default)
+        except ValueError:
+            return default
+    return _current_values()[name]
+
+
+def _reviewed_days() -> set[str]:
+    path = _reviews_path()
+    if not path.exists():
+        return set()
+    days: set[str] = set()
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict) and row.get("completed_day"):
+                days.add(str(row["completed_day"]))
+    except OSError:
+        pass
+    return days
+
+
+def _apply_missed_day_tuning(completed_day: date, shortfall: int) -> dict[str, Any]:
+    enabled = os.getenv("DAILY_GOAL_AUTO_TUNE_ENABLED", "true").lower() in TRUE_VALUES
+    before = _current_values()
+    after = dict(before)
+    if enabled:
+        for name, step in MISSED_STEPS.items():
+            low, high = TUNABLE_BOUNDS[name]
+            after[name] = min(high, max(low, before[name] + step))
+    changed = {
+        name: {"before": before[name], "after": after[name]}
+        for name in after if before[name] != after[name]
+    }
+    payload = {
+        "updated_at": datetime.now(JST).isoformat(),
+        "reason": "daily_post_target_missed",
+        "completed_day": completed_day.isoformat(),
+        "shortfall": shortfall,
+        "effective_values": after,
+        "changed": changed,
+        "protected_controls_unchanged": list(PROTECTED_CONTROLS),
+        "arbitrary_source_editing": False,
+    }
+    if enabled:
+        _policy_path().write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    return {
+        "status": "applied" if changed else ("at_bounds" if enabled else "disabled"),
+        **payload,
+    }
+
+
+def review_daily_goal(
+    *, now: datetime | None = None, apply_adjustment: bool = True
+) -> dict[str, Any]:
+    current = (now or datetime.now(JST)).astimezone(JST)
+    target = daily_target()
+    completed_day = current.date() - timedelta(days=1)
+    completed_count = post_count(completed_day)
+    today_count = post_count(current.date())
+    elapsed_ratio = (current.hour * 60 + current.minute) / (24 * 60)
+    expected_now = min(target, int(target * elapsed_ratio))
+    shortfall = max(0, target - completed_count)
+    already_reviewed = completed_day.isoformat() in _reviewed_days()
+    adjustment: dict[str, Any] = {"status": "not_needed"}
+    if shortfall and apply_adjustment and not already_reviewed:
+        adjustment = _apply_missed_day_tuning(completed_day, shortfall)
+    elif shortfall and already_reviewed:
+        adjustment = {"status": "already_applied"}
+    result = {
+        "status": "achieved" if shortfall == 0 else "missed",
+        "target": target,
+        "completed_day": completed_day.isoformat(),
+        "completed_count": completed_count,
+        "achievement_rate": round(completed_count / target, 4),
+        "shortfall": shortfall,
+        "today": current.date().isoformat(),
+        "today_count": today_count,
+        "expected_today_by_now": expected_now,
+        "today_on_pace": today_count >= expected_now,
+        "program_adjustment": adjustment,
+        "quality_gates_relaxed": False,
+        "post_limits_changed": False,
+        "budgets_changed": False,
+    }
+    if not already_reviewed and apply_adjustment:
+        path = _reviews_path()
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(result, ensure_ascii=False) + "\n")
+    return result
+
+
+def goal_status(now: datetime | None = None) -> dict[str, Any]:
+    result = review_daily_goal(now=now, apply_adjustment=False)
+    result["effective_tuning"] = _current_values()
+    result["auto_tune_enabled"] = (
+        os.getenv("DAILY_GOAL_AUTO_TUNE_ENABLED", "true").lower() in TRUE_VALUES
+    )
+    return result

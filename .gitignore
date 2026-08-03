@@ -224,6 +224,7 @@ data/fx/
 data/market_data/
 data/logo_cache/
 data/runtime/
+data/learning/
 *.bak-*
 knowledge/*
 !knowledge/README.md

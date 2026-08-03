@@ -486,6 +486,21 @@ FX・市場急変の統合結果は各機能の`integrated_context.jsonl`へ展�
 .\.venv\Scripts\python.exe local_finance_bot.py xai-social-report --days 30
 ```
 
+## Daily post goal
+
+The production target is 20 successful X posts per JST calendar day. The daily
+review records the completed previous day, achievement rate, shortfall, current
+day pace, and any bounded program adjustment.
+
+When the target is missed, the bot may only shorten the quiet-post interval and
+the high-quality idle fallback wait within hard-coded bounds. It cannot lower
+quality thresholds, bypass fact or safety checks, change API budgets, change
+daily/hourly post limits, or edit arbitrary source code.
+
+```powershell
+.\.venv\Scripts\python.exe local_finance_bot.py daily-goal-status
+```
+
 `XAI_SCORE_BONUS_ENABLED`は明示的な強制フラグです。通常は
 `XAI_SCORE_BONUS_AUTO_ENABLE=true`により、最低14日、20観測、
 24時間実績の機械条件を満たした場合だけ自動的に有効になります。

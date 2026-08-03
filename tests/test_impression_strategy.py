@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from common import performance_learning as learning
+from common import daily_post_goal
 from common.daily_log_analysis import redact
 from common.operations_alerts import notify_impression_strategy
 
@@ -59,6 +60,7 @@ class ImpressionStrategyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             with patch.object(learning, "_root", return_value=root), \
+                 patch.object(daily_post_goal, "state_dir", return_value=root / "state"), \
                  patch.object(learning, "_log_evidence", return_value={
                      "status": "ok", "summary": {"runs": 4}, "findings": [],
                      "error_samples": [], "secrets_redacted": True,
@@ -71,7 +73,18 @@ class ImpressionStrategyTests(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             payload = json.loads(
                 (root / "latest_impression_strategy.json").read_text(encoding="utf-8"))
-            self.assertFalse(payload["safety_constraints"]["config_mutation_allowed"])
+            self.assertTrue(payload["safety_constraints"]["config_mutation_allowed"])
+            self.assertFalse(
+                payload["safety_constraints"]["arbitrary_source_editing_allowed"]
+            )
+            self.assertEqual(
+                payload["safety_constraints"]["config_mutation_scope"],
+                [
+                    "NEWS_IDLE_FALLBACK_HOURS",
+                    "QUIET_MIN_GAP_MINUTES",
+                    "QUIET_MAX_GAP_MINUTES",
+                ],
+            )
             self.assertIn("翌日のimp/hを改善", context)
             self.assertIn("事実確認、安全審査", context)
 
@@ -85,6 +98,7 @@ class ImpressionStrategyTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temp, \
              patch.object(learning, "_root", return_value=Path(temp)), \
+             patch.object(daily_post_goal, "state_dir", return_value=Path(temp) / "state"), \
              patch.object(learning, "_log_evidence", return_value=evidence), \
              patch("common.openai_service.OpenAIService") as service:
             service.return_value.structured.return_value = _review()

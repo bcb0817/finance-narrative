@@ -561,6 +561,16 @@ def build_report(days: int = 1) -> str:
         lines.append("■ 日次学習")
         lines.append(f"  status={learning.get('status', '-')}")
         lines.append(f"  {learning.get('message') or learning.get('reason') or '-'}")
+        goal = learning.get("daily_goal") or {}
+        lines.append(
+            f"  daily_post_goal={goal.get('completed_count', '-')}"
+            f"/{goal.get('target', 20)} status={goal.get('status', '-')} "
+            f"shortfall={goal.get('shortfall', '-')}"
+        )
+        adjustment = goal.get("program_adjustment") or {}
+        lines.append(
+            f"  goal_program_adjustment={adjustment.get('status', 'not_needed')}"
+        )
         for post in learning.get("top_posts", [])[:top_n]:
             lines.append(
                 f"  {post.get('rank', '-')}. imp={_fmt(post.get('impressions'))} "

@@ -523,6 +523,16 @@ def update_daily_learning(
         return {"status": "disabled", "message": "日次学習は無効です"}
 
     now = datetime.now(JST)
+    try:
+        from common.daily_post_goal import review_daily_goal
+        daily_goal = review_daily_goal(now=now)
+    except Exception as exc:
+        logger.warning("日次投稿目標レビューに失敗しました: %s", type(exc).__name__)
+        daily_goal = {
+            "status": "unavailable",
+            "target": int(os.getenv("DAILY_POST_TARGET", "20") or 20),
+            "error_type": type(exc).__name__,
+        }
     cutoff = now - timedelta(hours=max(1, int(lookback_hours)))
     min_age_hours = max(0.0, float(os.environ.get("DAILY_MIN_POST_AGE_HOURS", "6")))
     candidates: list[dict] = []
@@ -564,6 +574,7 @@ def update_daily_learning(
             "date": run_date,
             "reason": "直近24時間の投稿でインプレッションを取得できませんでした",
             "top_posts": [],
+            "daily_goal": daily_goal,
         }
         (_reviews_dir() / f"{run_date}.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2) + "\n",
@@ -672,6 +683,16 @@ def update_daily_learning(
   }}
 }}"""
 
+    prompt += f"""
+
+【日次投稿目標の機械集計】
+{json.dumps(daily_goal, ensure_ascii=False)}
+
+投稿目標は1日20件です。未達の場合は、品質・事実確認・重複防止・予算・投稿上限を維持したまま、
+不足原因と翌日の投稿機会を増やす具体策をimpression_strategyへ含めてください。
+プログラムが自動変更できるのは投稿間隔と高品質フォールバック待ち時間だけです。
+"""
+
     review: dict
     try:
         try:
@@ -730,6 +751,7 @@ def update_daily_learning(
         "ranking": "impressions_desc",
         "top_posts": raw_top,
         "bottom_posts": bottom,
+        "daily_goal": daily_goal,
         "log_analysis": log_evidence,
         "review": review,
         "error": error,
@@ -765,9 +787,18 @@ def update_daily_learning(
             "generated_at": now.isoformat(),
             "source": "daily_performance_analysis",
             "log_analysis_status": log_evidence.get("status"),
+            "daily_goal": daily_goal,
             "strategy": review.get("impression_strategy") or {},
             "safety_constraints": {
-                "config_mutation_allowed": False,
+                "config_mutation_allowed": bool(
+                    daily_goal.get("program_adjustment", {}).get("status") == "applied"
+                ),
+                "config_mutation_scope": [
+                    "NEWS_IDLE_FALLBACK_HOURS",
+                    "QUIET_MIN_GAP_MINUTES",
+                    "QUIET_MAX_GAP_MINUTES",
+                ],
+                "arbitrary_source_editing_allowed": False,
                 "safety_gates_must_remain": True,
                 "budget_and_post_limits_must_remain": True,
             },
@@ -809,6 +840,7 @@ def update_daily_learning(
         "date": run_date,
         "top_count": len(raw_top),
         "top_posts": raw_top,
+        "daily_goal": daily_goal,
         "message": (
             f"インプレッション上位{len(raw_top)}件を学習データに保存しました"
             if status == "ok"

@@ -8,10 +8,11 @@ try: from post_registry import hours_since_last_post
 except ImportError: from common.post_registry import hours_since_last_post
 
 def posting_window(acceleration: float, now: datetime | None=None) -> dict:
+    from common.daily_post_goal import effective_int
     enabled=os.getenv("DYNAMIC_POSTING_ENABLED","true").lower() in ("1","true","yes")
     minimum=float(os.getenv("X_TOPIC_ACCELERATION_MINIMUM","1.25") or 1.25)
-    quiet_min=int(os.getenv("QUIET_MIN_GAP_MINUTES","60") or 60)
-    quiet_max=max(quiet_min,int(os.getenv("QUIET_MAX_GAP_MINUTES","120") or 120))
+    quiet_min=effective_int("QUIET_MIN_GAP_MINUTES",60)
+    quiet_max=max(quiet_min,effective_int("QUIET_MAX_GAP_MINUTES",120))
     elapsed=hours_since_last_post(now)
     if not enabled: return {"allow":True,"mode":"disabled","required_gap_minutes":0}
     high=acceleration>=minimum
