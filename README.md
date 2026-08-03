@@ -145,6 +145,21 @@ python local_finance_bot.py daemon
 スケジュールは `config/schedule.json` で変更できます。
 `RUN_WINDOW_MINUTES`（既定10分）を超えて遅延したスロットは、`CATCH_UP_ENABLED=false` の場合スキップされます。
 
+### 生成ファイルの自動整理
+
+daemon は24時間に1回、再生成できる古いファイルだけを自動削除します。既定では
+`outputs/` とバックアップを30日、マーケットデータのキャッシュを7日、
+レポート類を90日保持します。投稿履歴・API利用履歴・`.venv` は削除しません。
+
+```bash
+python local_finance_bot.py cleanup --dry-run  # 削除対象だけ確認
+python local_finance_bot.py cleanup            # 今すぐ実行
+```
+
+`.env` で `HOUSEKEEPING_ENABLED=false` にすると停止できます。保持期間は
+`OUTPUT_RETENTION_DAYS`、`BACKUP_RETENTION_DAYS`、`CACHE_RETENTION_DAYS`、
+`REPORT_RETENTION_DAYS` で変更できます。
+
 ## OSごとの常駐方法
 
 - **Windows**: タスクスケジューラで「ログオン時に `python local_finance_bot.py daemon`」を登録、またはターミナル常駐
@@ -217,7 +232,9 @@ The bot keeps its existing safety and posting pipeline while adding controlled g
 - No more than three experiments are active. Results prioritize available growth KPIs and never convert unavailable metrics to zero.
 - Metrics collection windows are 45–90 minutes, 330–420 minutes, and 1380–1620 minutes. Expired stages are recorded as `missed`; later values are never backfilled.
 - OpenAI Batch is limited to delayed historical analysis and is never used for realtime generation, duplicate checks, or safety review.
-- Quote-post candidates are a manual queue only. The bot never automatically quotes, replies, likes, follows, or sends DMs.
+- Quote-post candidate generation is disabled. The bot never automatically
+  quotes, replies, likes, follows, or sends DMs, and no human review queue is
+  created.
 - Operational alerts are written locally under `outputs/alerts`. Set
   `DISCORD_ALERTS_ENABLED=true` and `DISCORD_WEBHOOK_URL` in `.env` to deliver
   only newly detected and resolved alert state changes to Discord.
@@ -235,7 +252,6 @@ Inspection commands:
 .\.venv\Scripts\python.exe local_finance_bot.py experiments --weekly
 .\.venv\Scripts\python.exe local_finance_bot.py metrics-status
 .\.venv\Scripts\python.exe local_finance_bot.py rss-status
-.\.venv\Scripts\python.exe local_finance_bot.py quote-queue --pending
 .\.venv\Scripts\python.exe local_finance_bot.py alerts
 .\.venv\Scripts\python.exe local_finance_bot.py xai-cost-report --days 30
 .\.venv\Scripts\python.exe local_finance_bot.py xai-roi-report --days 30
@@ -329,8 +345,8 @@ DiscordとXには出ません。fixture通知だけは
 
 Twelve Data publication rights default to `unknown`. Data collection, local
 analysis, metrics, reports, and explicitly internal Discord previews continue,
-but public X text and charts are blocked until a human verifies the contract
-and explicitly configures the granular publication flags.
+but public X text and charts are automatically blocked until explicit rights
+configuration is present. No per-candidate human review queue is used.
 
 ```powershell
 .\.venv\Scripts\python.exe local_finance_bot.py td-license-status
@@ -365,3 +381,115 @@ never published as current prices.
 
 監視対象は`config/market_watchlist.json`、検知・使用量・キャッシュは
 `data/market_data/`、チャートとメタデータは`outputs/market_charts/`に保存します。
+
+Twelve Dataの外部表示権が未承認の場合、数値を丸める、方向だけにする、
+チャートを描き直す等の加工でもFX・市場データ投稿は許可しません。代わりに
+`OFFICIAL_EDITORIAL_POST_ENABLED=true`では、Fed、BEA、BLS、EIA、SEC等の
+公式RSSを独立した根拠とする市場解説をNews経路から投稿できます。この経路は
+Twelve Dataの検知・価格・騰落率・時間足・チャートを一切引き継がず、公式見出しに
+ない数字やリアルタイム相場表現を投稿前に遮断します。これは法的判断ではなく、
+データ出所を分離する技術的安全策です。
+
+## Evidence-first market-trigger workflow
+
+Twelve Data is used only as an internal movement sensor. Its prices, returns,
+high/low, volume, charts, and provider-derived figures are excluded from the
+public evidence bundle and from the OpenAI publication prompt. A movement
+creates `TriggerEvidence`, followed by source-specific `EventEvidence`,
+timing-aware `CausalEvidence`, and claim-level `PublicationEvidence`.
+
+Only a validated `PublicEvidenceBundle` reaches structured OpenAI generation.
+Every factual or causal claim must map to an evidence ID. Missing sources,
+stale timing, duplicate wire republication, reference-rate-only sources,
+unsupported market figures, and unconfirmed intervention claims stop before
+the X API call. Pending cases are rechecked after 15/30/60 minutes and expire
+after 120 minutes by default. News, Narrative, and Market Map continue if
+confirmation sources fail.
+
+```powershell
+.\.venv\Scripts\python.exe local_finance_bot.py trigger-status
+.\.venv\Scripts\python.exe local_finance_bot.py trigger-pending
+.\.venv\Scripts\python.exe local_finance_bot.py trigger-show <movement_id>
+.\.venv\Scripts\python.exe local_finance_bot.py trigger-evidence <movement_id>
+.\.venv\Scripts\python.exe local_finance_bot.py trigger-recheck <movement_id> --dry-run
+.\.venv\Scripts\python.exe local_finance_bot.py trigger-suppressed --hours 24
+.\.venv\Scripts\python.exe local_finance_bot.py trigger-confirmation-report --days 7
+.\.venv\Scripts\python.exe local_finance_bot.py trigger-source-report --days 7
+.\.venv\Scripts\python.exe local_finance_bot.py trigger-later-review --days 7
+.\.venv\Scripts\python.exe local_finance_bot.py publication-evidence-check <candidate_id>
+.\.venv\Scripts\python.exe local_finance_bot.py publication-license-status
+```
+
+Rollback: restore the task backup under
+`outputs/backups/market_trigger_flow_<timestamp>/`, then restart the daemon.
+The append-only JSONL evidence can be retained for audit after rollback.
+
+## xAI X Social Intelligence
+
+xAIは広域トレンド集計器ではなく、RSS、公式情報、FX・マルチアセット急変から
+ローカル生成した最大5件のイベントについて、X上の観測反応を調査する補助層です。
+事実確定、価格生成、売買推奨、為替介入の断定、Xへの直接投稿は行いません。
+検索結果の件数は「同じ検索条件内で観測された独立投稿数」であり、X全体の件数や
+世論を表しません。
+
+モードは`event_reaction`、`movement_explanation`、`expert_watch`、
+`exploration`の4種類です。探索枠は総費用の20%未満、同一イベントは既定60分の
+クールダウンを設けます。通常日2実行、重要イベント日4実行、60分キャッシュ、
+月額20ドルのhard limitは既存の予算台帳で継続管理します。1回の費用が警告値を
+超えた場合は、次回のイベント数を自動的に縮小します。
+
+観測結果は`data/xai/`の`runs.jsonl`、`events.jsonl`、
+`observations.jsonl`、`posts.jsonl`、`accounts.jsonl`、
+`content_opportunities.jsonl`へ保存します。各イベントの最新観測は銘柄・通貨・
+主体・話題語で関連付け、一致見解、単独見解、反論、誤情報候補、未確認事項、
+市場含意、証拠品質をローカルで統合分析します。結果は
+`integrated_analyses.jsonl`へ保存し、この処理による追加API費用は発生しません。
+統合結果は自動投稿せず、証拠品質と追加確認の要否を投稿判断へ渡します。
+新しい観測が入るたびに分析を版管理し、前版からの要約・証拠品質・確認事項・
+投稿準備状態の変化を記録します。編集用briefは`integrated_drafts.jsonl`、
+News候補や実投稿での利用履歴は`integrated_analysis_usage.jsonl`へ保存します。
+News生成では統合結果を市場解釈の参考に限定し、正式ソースを事実基準とします。
+FX・市場急変の統合結果は各機能の`integrated_context.jsonl`へ展開しますが、
+未確認の因果関係や為替介入を確定扱いしません。
+旧`topic_radar.jsonl`は、APIを再実行せず`possible`かつ確認必須の観測として
+新DBへ冪等移行できます。関連グループは主銘柄・意味類似度で作り、既定12件を
+上限に分割して過度に広いテーマ統合を防ぎます。
+投稿抜粋は短く制限し、生結果7日、
+正規化投稿30日、観測集計180日の保持方針です。破損JSONLは内容を再保存せず、
+ハッシュだけを隔離します。アカウントの人手修正は
+`config/xai_account_watchlist.json`で行います。
+
+```powershell
+.\.venv\Scripts\python.exe local_finance_bot.py xai-status
+.\.venv\Scripts\python.exe local_finance_bot.py xai-run --dry-run
+.\.venv\Scripts\python.exe local_finance_bot.py xai-events
+.\.venv\Scripts\python.exe local_finance_bot.py xai-event-show <event_id>
+.\.venv\Scripts\python.exe local_finance_bot.py xai-observations <event_id>
+.\.venv\Scripts\python.exe local_finance_bot.py xai-delta <event_id>
+.\.venv\Scripts\python.exe local_finance_bot.py xai-accounts
+.\.venv\Scripts\python.exe local_finance_bot.py xai-expert-watch
+.\.venv\Scripts\python.exe local_finance_bot.py xai-exploration-status
+.\.venv\Scripts\python.exe local_finance_bot.py xai-content-opportunities
+.\.venv\Scripts\python.exe local_finance_bot.py xai-integrate --days 3
+.\.venv\Scripts\python.exe local_finance_bot.py xai-import-legacy
+.\.venv\Scripts\python.exe local_finance_bot.py xai-integrated-results
+.\.venv\Scripts\python.exe local_finance_bot.py xai-integrated-show <analysis_id>
+.\.venv\Scripts\python.exe local_finance_bot.py xai-integrated-drafts
+.\.venv\Scripts\python.exe local_finance_bot.py xai-integrated-usage
+.\.venv\Scripts\python.exe local_finance_bot.py xai-funnel
+.\.venv\Scripts\python.exe local_finance_bot.py xai-roi
+.\.venv\Scripts\python.exe local_finance_bot.py xai-cost-breakdown
+.\.venv\Scripts\python.exe local_finance_bot.py xai-cache-status
+.\.venv\Scripts\python.exe local_finance_bot.py xai-budget-status
+.\.venv\Scripts\python.exe local_finance_bot.py xai-key-safety-status
+.\.venv\Scripts\python.exe local_finance_bot.py xai-shadow-report --days 14
+.\.venv\Scripts\python.exe local_finance_bot.py xai-social-report --days 30
+```
+
+`XAI_SCORE_BONUS_ENABLED`は明示的な強制フラグです。通常は
+`XAI_SCORE_BONUS_AUTO_ENABLE=true`により、最低14日、20観測、
+24時間実績の機械条件を満たした場合だけ自動的に有効になります。
+候補ごとの人間レビューや承認待ちはありません。
+`XAI_KEY_ROTATION_VERIFIED=false`の場合、statusと運用アラートは
+`rotation verification required`を表示します。安全停止は
+`XAI_SAFE_DISABLED=true`または`XAI_ENABLED=false`で行えます。

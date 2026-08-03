@@ -13,6 +13,9 @@ SCHEMAS = {
                  "cause_confidence", "chart_path", "blocked_reason"),
     "operations_alert": ("severity", "component", "safe_message", "error_type",
                          "first_seen", "last_seen", "resolved"),
+    "xai_research": ("run_id", "radar_mode", "event_count", "cost_usd",
+                     "event_summaries", "representative_posts",
+                     "content_opportunities", "cache_hit", "failure_reason"),
 }
 
 

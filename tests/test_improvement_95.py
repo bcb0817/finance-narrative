@@ -9,7 +9,9 @@ from unittest.mock import Mock, patch
 from common.data_governance import (
     classify_provider,
     display_status,
+    provider_isolated_editorial_decision,
     publication_decision,
+    validate_provider_isolated_editorial_text,
 )
 from common.discord_schema import sanitize_payload
 from common.external_heartbeat import publish as publish_heartbeat
@@ -20,7 +22,7 @@ from fx_alert.detector import detect_movements
 from fx_alert.models import FxBar
 from market_data.cross_asset import classify_cross_asset
 from market_data.models import MarketMovement
-from market_data.shadow import create_candidate, report as shadow_report, review as shadow_review
+from market_data.shadow import create_candidate, report as shadow_report
 from common.runtime_manifest import write_manifest, runtime_status
 from common.xai_quality import cost_breakdown
 
@@ -51,6 +53,48 @@ class Improvement95Tests(unittest.TestCase):
             "TWELVEDATA_PUBLIC_NUMERIC_DATA_ALLOWED": "true",
         }, clear=False):
             self.assertFalse(publication_decision(surface="x").allowed)
+
+    def test_provider_isolated_editorial_requires_official_independent_source(self):
+        with patch.dict(os.environ, {
+            "OFFICIAL_EDITORIAL_POST_ENABLED": "true",
+            "TWELVEDATA_EXTERNAL_DISPLAY_STATUS": "unknown",
+        }, clear=False):
+            allowed = provider_isolated_editorial_decision(
+                source_url="https://www.federalreserve.gov/newsevents/test.htm",
+                source_group="official_macro",
+                provider_lineage=[],
+            )
+            self.assertTrue(allowed["allowed"])
+            self.assertTrue(allowed["external_display_rights_not_inferred"])
+            media = provider_isolated_editorial_decision(
+                source_url="https://example.com/markets",
+                source_group="market_news",
+                provider_lineage=[],
+            )
+            self.assertFalse(media["allowed"])
+            contaminated = provider_isolated_editorial_decision(
+                source_url="https://www.federalreserve.gov/newsevents/test.htm",
+                source_group="official_macro",
+                provider_lineage=["twelvedata"],
+            )
+            self.assertFalse(contaminated["allowed"])
+
+    def test_provider_isolated_text_rejects_provider_like_or_invented_values(self):
+        valid = validate_provider_isolated_editorial_text(
+            "政策金利を5.25%に維持。次回声明のインフレ認識を確認したい。",
+            source_title="Federal Reserve maintains rate at 5.25%",
+        )
+        self.assertTrue(valid["allowed"])
+        invented = validate_provider_isolated_editorial_text(
+            "政策金利を5.25%に維持。ドル円は156.20円。",
+            source_title="Federal Reserve maintains rate at 5.25%",
+        )
+        self.assertFalse(invented["allowed"])
+        live = validate_provider_isolated_editorial_text(
+            "USD/JPYは15mで上昇。",
+            source_title="Federal Reserve statement",
+        )
+        self.assertFalse(live["allowed"])
 
     def test_fx_hard_trigger_survives_unavailable_dynamic_statistics(self):
         now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
@@ -181,7 +225,7 @@ class Improvement95Tests(unittest.TestCase):
                 available=True, data_age_seconds=200, max_age_seconds=180
             ), "stale")
 
-    def test_shadow_candidate_requires_human_review(self):
+    def test_shadow_candidate_is_automatically_evaluated(self):
         now = datetime.now(JST)
         movement = MarketMovement(
             movement_id="shadow-fixture", symbol="NVDA", asset_type="equity",
@@ -197,13 +241,12 @@ class Improvement95Tests(unittest.TestCase):
                 movement, chart_path="fixture.png", draft_text="fixture",
                 rights_passed=False, blocked_reason="license_blocked",
             )
-            self.assertEqual(candidate["review_status"], "pending")
+            self.assertEqual(candidate["review_status"], "license_blocked")
             self.assertFalse(candidate["would_post"])
-            shadow_review(candidate["candidate_id"], "false_positive", "fixture")
             result = shadow_report(days=7)
-            self.assertEqual(result["review_status"]["false_positive"], 1)
-            self.assertFalse(result["ready_for_human_enable_decision"])
-            self.assertFalse(result["automatic_enable"])
+            self.assertEqual(result["review_status"]["license_blocked"], 1)
+            self.assertFalse(result["human_review_required"])
+            self.assertFalse(result["ready_for_automatic_enable"])
 
     def test_runtime_manifest_has_hashes_without_env_content(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(

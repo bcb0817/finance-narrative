@@ -169,6 +169,24 @@ def main():
         print("市場変化が小さいため投稿スキップ（market_gate_not_met）")
         return
 
+    if not dry_run:
+        try:
+            from common.xai_social_intelligence import enqueue_market_map_event
+            enqueue_market_map_event({
+                "headline": headline,
+                "market_move": move,
+                "market_cap_change": cap_change,
+                "total_pct": total_pct,
+                "sector_skew": skew,
+                "breadth_ratio": breadth_ratio,
+                "max_sector_pct": max_sector_pct,
+                "top_sector": top_sector,
+                "intraday_reversal_pct": intraday_reversal_pct,
+                "gate": gate,
+            })
+        except Exception as exc:
+            print(f"[WARN] xAI market-map event queue skipped: {type(exc).__name__}")
+
     should_post = True
     tweet_id = ""
     skip_reason = "-"

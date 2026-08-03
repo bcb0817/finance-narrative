@@ -91,7 +91,9 @@ def health_check() -> dict:
     from common.xai_radar import cache_status, usage_summary
     from fx_alert.monitor import configured_pairs, enabled as fx_enabled
     from fx_alert.providers import get_provider
+    from fx_alert.storage import load_state as load_fx_state
     fx_provider=get_provider().status(probe=False)
+    fx_monitor_health=load_fx_state().get("quality_health",{})
     try:
         from market_data.monitor import market_status
         market_data_status=market_status()
@@ -111,10 +113,17 @@ def health_check() -> dict:
             "post_enabled":os.getenv("FX_POST_ENABLED","false").lower() in ("1","true","yes"),
             "pairs":configured_pairs(),
             "provider":fx_provider.to_dict(),
+            "monitor_ready":bool(
+                fx_provider.available
+                and fx_monitor_health.get("status","healthy")=="healthy"
+            ),
+            "monitor_health":fx_monitor_health,
         },
         "market_data":market_data_status,
     }
-    if not process_alive or heartbeat_age is None or heartbeat_age>10 or disk.free/disk.total<.05 or result["alerts_write"]["status"]!="ok":
+    if (not process_alive or heartbeat_age is None or heartbeat_age>10
+            or disk.free/disk.total<.05 or result["alerts_write"]["status"]!="ok"
+            or fx_monitor_health.get("status")=="degraded"):
         result["status"]="degraded"
     return result
 

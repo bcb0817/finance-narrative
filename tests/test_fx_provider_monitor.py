@@ -3,6 +3,8 @@ import os
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,7 +12,8 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from fx_alert.monitor import run_monitor
+from fx_alert.monitor import effective_max_age_seconds, evaluate, run_monitor
+from fx_alert.fixture import movement_fixture
 from fx_alert.providers import PolygonProvider, TwelveDataProvider, get_provider, provider_symbol
 from fx_alert.storage import append_jsonl, cleanup, read_jsonl
 
@@ -37,6 +40,42 @@ class Session:
 
 
 class FxProviderMonitorTests(unittest.TestCase):
+    def test_freshness_limit_accounts_for_polling_and_bar_finalization(self):
+        with patch.dict(os.environ, {
+            "FX_DATA_MAX_AGE_SECONDS": "90",
+            "FX_POLL_INTERVAL_MINUTES": "5",
+            "FX_BAR_FINALIZATION_ALLOWANCE_SECONDS": "120",
+        }):
+            self.assertEqual(effective_max_age_seconds(), 420)
+
+    def test_two_minute_bar_delay_does_not_block_five_minute_monitor(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "STATE_DIR": temp,
+            "FX_DATA_MAX_AGE_SECONDS": "90",
+            "FX_POLL_INTERVAL_MINUTES": "5",
+            "FX_BAR_FINALIZATION_ALLOWANCE_SECONDS": "120",
+        }):
+            bars = movement_fixture()
+            result = evaluate(bars, dry_run=True)
+            self.assertNotEqual(result["status"], "quality_blocked")
+            self.assertNotEqual(result["status"], "quality_degraded")
+
+    def test_repeated_stale_data_escalates_to_quality_degraded(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "STATE_DIR": temp,
+            "FX_DATA_MAX_AGE_SECONDS": "600",
+            "FX_QUALITY_ALERT_CONSECUTIVE_RUNS": "3",
+        }):
+            bars = [
+                replace(item, timestamp=item.timestamp - timedelta(hours=2))
+                for item in movement_fixture()
+            ]
+            self.assertEqual(evaluate(bars, dry_run=True)["status"], "quality_blocked")
+            self.assertEqual(evaluate(bars, dry_run=True)["status"], "quality_blocked")
+            third = evaluate(bars, dry_run=True)
+            self.assertEqual(third["status"], "quality_degraded")
+            self.assertEqual(third["health"]["consecutive_blocked_runs"], 3)
+
     def test_provider_symbol(self):
         self.assertEqual(provider_symbol("USDJPY"), "USD/JPY")
 
@@ -134,10 +173,26 @@ class FxProviderMonitorTests(unittest.TestCase):
             "OUTPUT_DIR": str(Path(temp) / "outputs"),
             "TWELVE_DATA_API_KEY": "",
             "FX_DATA_PROVIDER": "twelvedata",
-        }):
+        }), patch("fx_alert.monitor.log_error"):
             result = run_monitor(dry_run=True)
             self.assertEqual(result["status"], "provider_unavailable")
             self.assertTrue(result["safe_failure"])
+
+    def test_provider_failure_logs_redacted_error_detail(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "STATE_DIR": str(Path(temp) / "data"),
+            "OUTPUT_DIR": str(Path(temp) / "outputs"),
+            "LOG_DIR": str(Path(temp) / "logs"),
+            "FX_ENABLED": "true",
+        }), patch("fx_alert.monitor.get_provider", side_effect=RuntimeError(
+            "API_KEY=secret-value provider unavailable"
+        )), patch("fx_alert.monitor.log_error") as log_error:
+            result = run_monitor(dry_run=True)
+            self.assertEqual(result["status"], "provider_unavailable")
+            error = log_error.call_args.args[0]
+            self.assertEqual(error["error_type"], "RuntimeError")
+            self.assertIn("<redacted>", error["error_detail"])
+            self.assertNotIn("secret-value", error["error_detail"])
 
 
 if __name__ == "__main__":

@@ -74,10 +74,12 @@ class DailyReviewRegressionTests(unittest.TestCase):
             "impressions":100,
         }]
         with tempfile.TemporaryDirectory() as temp, \
-             patch.object(performance_learning,"_root",return_value=Path(temp)), \
-             patch.object(performance_learning.logger,"exception") as logged_exception:
-            with patch("common.openai_service.OpenAIService.structured",
-                       side_effect=DailyLimitError("analyze daily limit reached")):
+            patch.object(performance_learning,"_root",return_value=Path(temp)), \
+            patch.object(performance_learning.logger,"exception") as logged_exception:
+            with patch("common.openai_service.OpenAIService") as service_class:
+                service_class.return_value.structured.side_effect = DailyLimitError(
+                    "analyze daily limit reached"
+                )
                 result=performance_learning.update_daily_learning(metrics)
         self.assertEqual(result["status"],"skipped")
         self.assertEqual(result["message"],

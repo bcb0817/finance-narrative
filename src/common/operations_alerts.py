@@ -69,6 +69,7 @@ def evaluate(now: datetime | None=None) -> list[dict]:
     if os.getenv("FX_ENABLED","true").strip().lower() in TRUE_VALUES:
         try:
             from fx_alert.providers import get_provider
+            from fx_alert.storage import load_state as load_fx_state
             provider=get_provider().status(probe=False)
             if not provider.available:
                 alerts.append({
@@ -76,6 +77,22 @@ def evaluate(now: datetime | None=None) -> list[dict]:
                     "severity":"medium",
                     "bot":"fx-alert",
                     "detail":provider.detail,
+                })
+            quality_health=load_fx_state().get("quality_health",{})
+            blocked=int(quality_health.get("consecutive_blocked_runs",0) or 0)
+            quality_threshold=int(
+                os.getenv("FX_QUALITY_ALERT_CONSECUTIVE_RUNS","3") or 3
+            )
+            if blocked >= quality_threshold:
+                alerts.append({
+                    "code":"fx_data_quality_degraded",
+                    "severity":"high",
+                    "bot":"fx-alert",
+                    "detail":(
+                        "FX market data failed freshness or quality checks for "
+                        f"{quality_threshold} consecutive monitor runs; movement "
+                        "detection is unavailable"
+                    ),
                 })
         except Exception as exc:
             alerts.append({
@@ -123,6 +140,75 @@ def evaluate(now: datetime | None=None) -> list[dict]:
                 "code":"market_data_provider_unavailable",
                 "severity":"medium","bot":"market-data",
                 "detail":f"provider status failed: {type(exc).__name__}",
+            })
+    if os.getenv("XAI_ENABLED", "true").strip().lower() in TRUE_VALUES:
+        if os.getenv("XAI_SAFE_DISABLED", "false").strip().lower() in TRUE_VALUES:
+            alerts.append({
+                "code": "xai_safe_disabled",
+                "severity": "high",
+                "bot": "xai",
+                "detail": "xAI is safely disabled by credential or configuration policy",
+            })
+        if os.getenv("XAI_KEY_ROTATION_VERIFIED", "false").strip().lower() not in TRUE_VALUES:
+            alerts.append({
+                "code": "xai_key_rotation_verification_required",
+                "severity": "high",
+                "bot": "xai",
+                "detail": "xAI key rotation configuration is not marked verified",
+            })
+        try:
+            from common.xai_social_intelligence import (
+                adaptive_cost_policy, budget_status, read_jsonl,
+            )
+            xai_budget = budget_status()
+            if float(xai_budget.get("remaining_usd") or 0) <= float(
+                os.getenv("XAI_TARGET_COST_PER_CALL_USD", "0.10") or 0.10
+            ):
+                alerts.append({
+                    "code": "xai_monthly_budget_stop",
+                    "severity": "high",
+                    "bot": "xai",
+                    "detail": "xAI monthly budget reserve reached; xAI calls are stopped",
+                })
+            policy = adaptive_cost_policy()
+            if policy.get("temporary_pause"):
+                alerts.append({
+                    "code": "xai_adaptive_cost_pause",
+                    "severity": "high",
+                    "bot": "xai",
+                    "detail": "xAI paused after three unusually expensive social research runs",
+                })
+            recent_runs = read_jsonl("runs.jsonl", limit=1)
+            if recent_runs and recent_runs[-1].get("status") == "failed":
+                alerts.append({
+                    "code": "xai_latest_run_failed",
+                    "severity": "medium",
+                    "bot": "xai",
+                    "detail": (
+                        "latest xAI research run failed safely: "
+                        f"{recent_runs[-1].get('error_type') or 'unknown'}"
+                    ),
+                })
+            if (
+                recent_runs
+                and recent_runs[-1].get("status") == "success"
+                and recent_runs[-1].get("integration_status") == "failed"
+            ):
+                alerts.append({
+                    "code": "xai_integration_failed",
+                    "severity": "medium",
+                    "bot": "xai",
+                    "detail": (
+                        "xAI research succeeded but local integration failed safely: "
+                        f"{recent_runs[-1].get('integration_error_type') or 'unknown'}"
+                    ),
+                })
+        except Exception as exc:
+            alerts.append({
+                "code": "xai_status_unavailable",
+                "severity": "medium",
+                "bot": "xai",
+                "detail": f"xAI status inspection failed: {type(exc).__name__}",
             })
     return [{**row,"detected_at":now.isoformat()} for row in alerts]
 
@@ -416,6 +502,105 @@ def notify_impression_strategy(payload: dict, *, session=requests) -> dict:
         "sent_at":datetime.now(JST).isoformat(),
     },ensure_ascii=False,indent=2)+"\n")
     return {"status":"sent","sent":True,"strategy_id":strategy_id}
+
+
+def notify_xai_research_result(
+    run_row: dict,
+    observations: list[dict],
+    opportunities: list[dict],
+    *,
+    integrated_analyses: list[dict] | None = None,
+    session=requests,
+) -> dict:
+    """Send one compact research result; raw logs and prompts never leave the host."""
+    if os.getenv("DISCORD_XAI_NOTIFICATIONS_ENABLED", "true").strip().lower() not in TRUE_VALUES:
+        return {"status": "disabled", "sent": False}
+    if os.getenv("DISCORD_ALERTS_ENABLED", "false").strip().lower() not in TRUE_VALUES:
+        return {"status": "disabled", "sent": False}
+    url = _discord_webhook_url()
+    if not url:
+        return {"status": "configuration_error", "sent": False}
+    run_id = redact_discord_text(run_row.get("run_id") or "")[:64]
+    if not run_id:
+        return {"status": "invalid_run", "sent": False}
+    state_path = state_dir() / "discord_xai_research.json"
+    state = _read_json(state_path, {"run_ids": []})
+    sent_ids = {str(item) for item in state.get("run_ids", [])}
+    if run_id in sent_ids:
+        return {"status": "duplicate", "sent": False, "run_id": run_id}
+
+    lines = [
+        "🔎 xAI調査結果" if run_row.get("status") == "success" else "⚠️ xAI調査失敗",
+        (
+            f"mode={redact_discord_text(run_row.get('radar_mode') or '-')}, "
+            f"events={int(run_row.get('events_researched') or 0)}, "
+            f"cost=${float(run_row.get('cost_usd') or 0):.4f}, "
+            f"cache={'hit' if run_row.get('cache_hit') else 'miss'}"
+        ),
+    ]
+    if run_row.get("status") != "success":
+        lines.append(
+            "停止理由: "
+            + redact_discord_text(
+                run_row.get("error_type") or run_row.get("failure_stage") or "unknown"
+            )[:120]
+        )
+    if integrated_analyses:
+        lines.append("統合分析:")
+        for item in integrated_analyses[:3]:
+            evidence = item.get("evidence") or {}
+            lines.append(
+                f"• {redact_discord_text(item.get('integrated_summary') or '')[:220]} "
+                f"[根拠={redact_discord_text(evidence.get('quality') or 'low')}, "
+                f"events={int(evidence.get('event_count') or 0)}, "
+                f"accounts={int(evidence.get('unique_account_count') or 0)}]"
+            )
+            if item.get("facts_needing_confirmation"):
+                lines.append("  判定: 追加確認が必要")
+        lines.append(
+            f"編集候補={len(opportunities)}件 / 自動投稿なし"
+        )
+    else:
+        for observation in observations[:3]:
+            interpretation = observation.get("interpretation") or {}
+            summary = (
+                interpretation.get("topic_summary")
+                or interpretation.get("dominant_narrative")
+                or observation.get("event_id")
+                or "event"
+            )
+            lines.append(f"• {redact_discord_text(summary)[:240]}")
+        lines.append(f"編集候補={len(opportunities)}件 / 自動投稿なし")
+    payload = {
+        "username": "finance-narrative xAI",
+        "allowed_mentions": {"parse": []},
+        "content": "\n".join(lines)[:1900],
+    }
+    try:
+        response = session.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        return {
+            "status": "delivery_failed",
+            "error_type": type(exc).__name__,
+            "sent": False,
+            "run_id": run_id,
+        }
+    sent_ids.add(run_id)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(
+        state_path,
+        json.dumps(
+            {
+                "run_ids": sorted(sent_ids)[-2000:],
+                "updated_at": datetime.now(JST).isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+    )
+    return {"status": "sent", "sent": True, "run_id": run_id}
 
 
 def send_discord_alerts(rows: list[dict], *, now: datetime | None=None,

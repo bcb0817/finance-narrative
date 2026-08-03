@@ -301,11 +301,12 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
                     raise RuntimeError(
                         f"metrics collection failed: {metrics_result.get('status_code') or metrics_result.get('error_type') or 'unknown'}")
             elif bot == "radar":
-                from common.xai_radar import refresh
-                radar_result = refresh()
+                from common.xai_social_intelligence import consume_event_trigger, run
+                consume_event_trigger()
+                radar_result = run()
                 print(json.dumps(radar_result, ensure_ascii=False))
                 # disabled/key missing/budget超過は既存Bot継続のため正常終了。
-                if radar_result.get("status") == "error":
+                if radar_result.get("status") == "failed":
                     raise RuntimeError(f"radar failed: {radar_result.get('reason','unknown')}")
             elif bot == "fx-monitor":
                 from fx_alert.monitor import run_monitor
@@ -491,12 +492,18 @@ def cmd_status() -> None:
         print(f"xAI COST    : ${xai['spent_usd']:.4f}/${xai['budget_usd']:.2f} "
               f"remaining=${xai['remaining_usd']:.4f} calls(today/month)={xai['daily_calls']}/{xai['monthly_calls']}")
         from fx_alert.providers import get_provider
+        from fx_alert.storage import load_state as load_fx_state
         fx_provider = get_provider().status(probe=False)
+        fx_health = load_fx_state().get("quality_health", {})
+        fx_ready = bool(
+            fx_provider.available and fx_health.get("status", "healthy") == "healthy"
+        )
         print(
             "FX ALERT    : "
             f"enabled={os.getenv('FX_ENABLED','true')} "
             f"post_enabled={os.getenv('FX_POST_ENABLED','false')} "
-            f"provider={fx_provider.name} ready={fx_provider.available} mode={fx_provider.mode}"
+            f"provider={fx_provider.name} ready={fx_ready} mode={fx_provider.mode} "
+            f"quality={fx_health.get('status','unknown')}"
         )
         from market_data.monitor import market_status
         market = market_status()
@@ -655,10 +662,22 @@ def cmd_ai_batch_cancel(batch_id: str) -> None:
 
 def cmd_xai_status() -> None:
     from common.xai_radar import status
+    from common.xai_social_intelligence import (
+        budget_status, key_safety_status, list_events, social_report,
+    )
     row=status()
+    safety=key_safety_status()
+    report=social_report(30)
+    budget=budget_status()
+    state_path=state_dir()/"xai"/"state.json"
+    try:
+        social_state=json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError,json.JSONDecodeError):
+        social_state={}
     print("=== xAI radar status ===")
     print(f"enabled={row['enabled']} ready={row['ready']}")
     print(f"model={row['model']} API key configured={'yes' if row['api_key_configured'] else 'no'}")
+    print(f"key rotation verification={safety['rotation_verification']}")
     print(f"reason={row['reason']} cached_topics={row['cache']['topic_count']} hit_rate={row['cache']['hit_rate']}")
     print(f"calls today={row['usage']['daily_calls']}/{row['usage']['daily_limit']} total={row['usage']['calls']}")
     print(
@@ -666,6 +685,26 @@ def cmd_xai_status() -> None:
         f"/${row['usage']['budget_usd']:.2f}"
         f" remaining=${row['usage']['remaining_usd']:.4f}"
     )
+    print(f"mode={social_state.get('last_mode','not_run')} queued_events={len(list_events())}")
+    print(f"last_success={social_state.get('last_successful_at')} last_failure={social_state.get('last_failure')}")
+    print(
+        f"social success_rate={report.get('success_rate')} "
+        f"avg_cost={report.get('cost_per_run_usd')} "
+        f"useful_insight_cost={report.get('cost_per_useful_insight_usd')}"
+    )
+    print(
+        f"post_conversion={report.get('posts_created',0)}/{report.get('events_researched',0)} "
+        f"daily_soft_cost=${budget.get('daily_social_intelligence_cost_usd',0):.4f}"
+    )
+    try:
+        from common.operations_alerts import evaluate
+        critical=sum(
+            str(item.get("severity") or "").lower() == "high"
+            for item in evaluate()
+        )
+    except Exception:
+        critical="unavailable"
+    print(f"unresolved critical alerts={critical}")
 
 
 def cmd_config_status() -> None:
@@ -692,6 +731,7 @@ def cmd_fx_status() -> None:
     from fx_alert.providers import get_provider
     from fx_alert.storage import load_state, read_jsonl
     provider = get_provider().status(probe=False)
+    monitor_health = load_state().get("quality_health", {})
     result = {
         "enabled": enabled(),
         "post_enabled": os.getenv("FX_POST_ENABLED", "false").lower() in ("1", "true", "yes"),
@@ -700,6 +740,10 @@ def cmd_fx_status() -> None:
         "effective_mode": provider.mode,
         "poll_interval_minutes": int(os.getenv("FX_POLL_INTERVAL_MINUTES", "5") or 5),
         "provider": provider.to_dict(),
+        "monitor_ready": bool(
+            provider.available and monitor_health.get("status", "healthy") == "healthy"
+        ),
+        "monitor_health": monitor_health,
         "movement_count": len(read_jsonl("movements.jsonl")),
         "alert_count": len(read_jsonl("alerts.jsonl")),
         "state_updated_at": load_state().get("updated_at"),
@@ -740,6 +784,7 @@ def cmd_fx_history(limit: int) -> None:
     print(json.dumps({
         "movements": read_jsonl("movements.jsonl", limit=limit),
         "alerts": read_jsonl("alerts.jsonl", limit=limit),
+        "xai_context": read_jsonl("xai_context.jsonl", limit=limit),
     }, ensure_ascii=False, indent=2))
 
 
@@ -821,18 +866,73 @@ def cmd_alert_self_test() -> None:
 
 
 def cmd_radar(refresh_now: bool=False) -> None:
-    from common.xai_radar import load_cache, refresh
-    result=refresh() if refresh_now else {"status":"cache","topics":load_cache()}
-    print(f"radar status={result.get('status')} topics={len(result.get('topics',[]))}")
-    for row in result.get("topics",[]): print(f"- {row.get('topic')} acceleration={row.get('acceleration_score')} confirmation={row.get('news_confirmation_status')}")
+    from common.xai_social_intelligence import list_events, run
+    result=run() if refresh_now else {"status":"events","events":list_events(20)}
+    print(json.dumps(result,ensure_ascii=False,indent=2))
 
 
-def cmd_quote_queue(today=False,pending=False) -> None:
-    from common.quote_queue import list_queue
-    rows=list_queue(today=today,pending=pending)
-    print(f"quote queue: {len(rows)}件（自動投稿なし）")
-    for row in rows:
-        print(f"- [{row.get('status')}] {row.get('detected_topic')} @{row.get('source_username')} {row.get('source_post_url')}")
+def cmd_xai_social(command: str, **kwargs) -> None:
+    from common.xai_social_intelligence import (
+        account_watchlist, budget_status, delta, event_show, exploration_status,
+        import_legacy_research, integrate_research_results, key_safety_status,
+        list_events, observations, read_jsonl, run,
+        shadow_report, social_report,
+    )
+    if command == "xai-run":
+        result=run(dry_run=bool(kwargs.get("dry_run")))
+    elif command == "xai-events":
+        result={"events":list_events(int(kwargs.get("limit",50)))}
+    elif command == "xai-event-show":
+        result=event_show(str(kwargs.get("event_id",""))) or {"status":"not_found"}
+    elif command == "xai-observations":
+        result={"observations":observations(str(kwargs.get("event_id","")))}
+    elif command == "xai-delta":
+        result=delta(str(kwargs.get("event_id","")))
+    elif command in {"xai-accounts","xai-expert-watch"}:
+        result={"watchlist":account_watchlist(),"observed_accounts":read_jsonl("accounts.jsonl",limit=100)}
+    elif command == "xai-exploration-status":
+        result=exploration_status()
+    elif command == "xai-content-opportunities":
+        result={"opportunities":read_jsonl("content_opportunities.jsonl",limit=int(kwargs.get("limit",50)))}
+    elif command == "xai-integrate":
+        result=integrate_research_results(
+            event_ids=kwargs.get("event_ids") or (),
+            days=int(kwargs.get("days",3)),
+            persist=not bool(kwargs.get("dry_run")),
+        )
+    elif command == "xai-import-legacy":
+        result=import_legacy_research()
+    elif command == "xai-integrated-results":
+        result={
+            "analyses":read_jsonl(
+                "integrated_analyses.jsonl",limit=int(kwargs.get("limit",50))
+            )
+        }
+    elif command == "xai-integrated-show":
+        analysis_id=str(kwargs.get("analysis_id") or "")
+        result=next((
+            row for row in reversed(read_jsonl("integrated_analyses.jsonl"))
+            if str(row.get("analysis_id") or "") == analysis_id
+        ),{"status":"not_found","analysis_id":analysis_id})
+    elif command == "xai-integrated-drafts":
+        result={"drafts":read_jsonl(
+            "integrated_drafts.jsonl",limit=int(kwargs.get("limit",50))
+        )}
+    elif command == "xai-integrated-usage":
+        result={"usage":read_jsonl(
+            "integrated_analysis_usage.jsonl",limit=int(kwargs.get("limit",50))
+        )}
+    elif command == "xai-budget-status":
+        result=budget_status()
+    elif command == "xai-key-safety-status":
+        result=key_safety_status()
+    elif command == "xai-shadow-report":
+        result=shadow_report(int(kwargs.get("days",14)))
+    elif command == "xai-social-report":
+        result=social_report(int(kwargs.get("days",30)))
+    else:
+        result={"status":"unsupported","command":command}
+    print(json.dumps(result,ensure_ascii=False,indent=2))
 
 
 def cmd_experiments(weekly=False) -> None:
@@ -1002,6 +1102,53 @@ def cmd_market_publication_status() -> None:
     _print_json(market_publication_status())
 
 
+def cmd_trigger_evidence(
+    command: str,
+    *,
+    movement_id: str = "",
+    candidate_id: str = "",
+    days: int = 7,
+    hours: int = 24,
+    dry_run: bool = False,
+) -> None:
+    from market_data import evidence_flow
+    if command == "trigger-status":
+        value = evidence_flow.trigger_status()
+    elif command == "trigger-pending":
+        value = evidence_flow.pending_confirmations()
+    elif command == "trigger-show":
+        value = evidence_flow.get_trigger(movement_id) or {
+            "status": "not_found", "movement_id": movement_id,
+        }
+    elif command == "trigger-evidence":
+        value = evidence_flow.evidence_for(movement_id)
+    elif command == "trigger-recheck":
+        value = evidence_flow.process_recheck(
+            movement_id, dry_run=dry_run,
+        )
+    elif command == "trigger-suppressed":
+        value = evidence_flow.suppressed_report(hours=hours)
+    elif command == "trigger-confirmation-report":
+        value = evidence_flow.confirmation_report(days=days)
+    elif command == "trigger-source-report":
+        value = evidence_flow.source_report(days=days)
+    elif command == "trigger-later-review":
+        value = evidence_flow.later_review_report(days=days)
+    elif command == "publication-evidence-check":
+        value = evidence_flow.publication_evidence_check(candidate_id)
+    elif command == "publication-license-status":
+        from common.data_governance import license_status
+        value = {
+            "license": license_status(),
+            "twelvedata_internal_trigger_only": True,
+            "provider_values_in_public_bundle": False,
+            "direct_twelvedata_publication": False,
+        }
+    else:
+        value = {"status": "unsupported_command", "command": command}
+    _print_json(value)
+
+
 def cmd_rss_status() -> None:
     from news_bot.news import rss_status
     _print_json(rss_status())
@@ -1026,22 +1173,22 @@ def cmd_xai_quality(command: str, *, days: int = 30) -> None:
     if command == "xai-funnel":
         value = funnel(days)
     elif command == "xai-cache-status":
-        value = cache_status(days)
+        from common.xai_social_intelligence import social_cache_status
+        value = {
+            "legacy_radar_cache": cache_status(days),
+            "social_event_cache": social_cache_status(days),
+        }
     else:
         value = cost_breakdown(days)
     _print_json(value)
 
 
 def cmd_shadow(command: str, candidate_id: str = "", reason: str = "", days: int = 7) -> None:
-    from market_data.shadow import list_candidates, report, review, show
+    from market_data.shadow import list_candidates, report, show
     if command == "shadow-list":
         value = list_candidates(days=days)
     elif command == "shadow-show":
         value = show(candidate_id) or {"status": "not_found", "candidate_id": candidate_id}
-    elif command == "shadow-approve":
-        value = review(candidate_id, "approved", reason)
-    elif command == "shadow-reject":
-        value = review(candidate_id, "rejected", reason)
     else:
         value = report(days=days)
     _print_json(value)
@@ -1055,6 +1202,11 @@ def cmd_external_heartbeat(command: str) -> None:
 def cmd_runtime_manifest(write: bool = False) -> None:
     from common.runtime_manifest import runtime_status, write_manifest
     _print_json(write_manifest() if write else runtime_status())
+
+
+def cmd_cleanup(*, dry_run: bool = False) -> None:
+    from common.housekeeping import run_scheduled_housekeeping
+    _print_json(run_scheduled_housekeeping(force=True, dry_run=dry_run))
 
 
 def cmd_daemon() -> None:
@@ -1087,12 +1239,30 @@ def cmd_daemon() -> None:
     _write_heartbeat(status="started")
     try:
         while not stop["flag"]:
+            try:
+                from common.housekeeping import run_scheduled_housekeeping
+                cleanup_result = run_scheduled_housekeeping()
+                if cleanup_result.get("status") not in {"not_due", "disabled"}:
+                    print(
+                        "[housekeeping] "
+                        f"status={cleanup_result.get('status')} "
+                        f"files={cleanup_result.get('deleted_files', 0)} "
+                        f"bytes={cleanup_result.get('reclaimed_bytes', 0)}"
+                    )
+            except Exception as exc:
+                print(f"[WARN] housekeeping skipped after {type(exc).__name__}")
             now_utc = datetime.now(timezone.utc)
             plans = []
             for bot in SCHED_BOTS:
                 nxt = next_run_utc(bot, sched, now_utc)
                 if nxt:
                     plans.append((nxt, bot))
+            try:
+                from common.xai_social_intelligence import pending_event_trigger
+                if sched.get("radar", {}).get("enabled") and pending_event_trigger():
+                    plans.append((now_utc, "radar"))
+            except Exception as exc:
+                print(f"[WARN] xAI event trigger check skipped after {type(exc).__name__}")
             if not plans:
                 print("[daemon] 有効なスケジュールがありません。終了します。")
                 break
@@ -1178,6 +1348,53 @@ def main() -> None:
     sub.add_parser("xai-status", help="xAI X Searchレーダーの状態と予算")
     xsmoke=sub.add_parser("xai-smoke", help="xAI設定を呼び出しなしで確認")
     xsmoke.add_argument("--dry-run",action="store_true",required=True)
+    xai_run=sub.add_parser("xai-run",help="イベント起点のX Social Intelligenceを安全に実行")
+    xai_run.add_argument("--dry-run",action="store_true",required=True)
+    xai_events=sub.add_parser("xai-events",help="ローカル生成されたxAI調査イベント")
+    xai_events.add_argument("--limit",type=int,default=50)
+    xai_event_show=sub.add_parser("xai-event-show",help="xAI調査イベント詳細")
+    xai_event_show.add_argument("event_id")
+    xai_observations=sub.add_parser("xai-observations",help="イベントの時間差観測")
+    xai_observations.add_argument("event_id")
+    xai_delta=sub.add_parser("xai-delta",help="イベントの最新観測差分")
+    xai_delta.add_argument("event_id")
+    sub.add_parser("xai-accounts",help="アカウント品質watchlistと観測結果")
+    sub.add_parser("xai-expert-watch",help="専門家・公式アカウント設定（投稿なし）")
+    sub.add_parser("xai-exploration-status",help="exploration費用割合と利用状況")
+    xai_opportunities=sub.add_parser("xai-content-opportunities",help="チャネル別企画候補")
+    xai_opportunities.add_argument("--limit",type=int,default=50)
+    xai_integrate=sub.add_parser(
+        "xai-integrate",help="保存済みの各xAI調査結果を横断統合・分析"
+    )
+    xai_integrate.add_argument("--days",type=int,default=3)
+    xai_integrate.add_argument("--event-id",dest="event_ids",action="append",default=[])
+    xai_integrate.add_argument(
+        "--dry-run",action="store_true",help="分析結果を保存せず表示"
+    )
+    sub.add_parser(
+        "xai-import-legacy",
+        help="旧Radar結果を未確認観測として新DBへ冪等移行",
+    )
+    xai_integrated=sub.add_parser(
+        "xai-integrated-results",help="保存済みの統合分析結果"
+    )
+    xai_integrated.add_argument("--limit",type=int,default=50)
+    xai_integrated_show=sub.add_parser(
+        "xai-integrated-show",help="統合分析1件の根拠・差分・安全判定"
+    )
+    xai_integrated_show.add_argument("analysis_id")
+    for command, help_text in (
+        ("xai-integrated-drafts","統合分析から生成した編集用下書き"),
+        ("xai-integrated-usage","News候補・投稿での統合分析利用履歴"),
+    ):
+        parser=sub.add_parser(command,help=help_text)
+        parser.add_argument("--limit",type=int,default=50)
+    sub.add_parser("xai-budget-status",help="xAI hard/soft予算と縮小状態")
+    sub.add_parser("xai-key-safety-status",help="秘密値を表示せずキー痕跡を確認")
+    xai_shadow=sub.add_parser("xai-shadow-report",help="xAIスコア加点shadow")
+    xai_shadow.add_argument("--days",type=int,default=14)
+    xai_social_report=sub.add_parser("xai-social-report",help="X Social Intelligence集計")
+    xai_social_report.add_argument("--days",type=int,default=30)
     radar=sub.add_parser("radar",help="X話題レーダーを表示")
     batch_status = sub.add_parser("ai-batch-status", help="Batch API configuration and job status")
     batch_status.add_argument("--batch-id", default="")
@@ -1226,6 +1443,31 @@ def main() -> None:
     sub.add_parser("td-license-status", help="Unified Twelve Data display rights")
     sub.add_parser("td-license-checklist", help="Human contract review checklist")
     sub.add_parser("market-publication-status", help="Publication gates by surface")
+    sub.add_parser("trigger-status", help="Market trigger evidence workflow status")
+    sub.add_parser("trigger-pending", help="Pending independent confirmations")
+    trigger_show = sub.add_parser("trigger-show", help="Show one internal trigger")
+    trigger_show.add_argument("movement_id")
+    trigger_evidence = sub.add_parser("trigger-evidence", help="Show linked evidence")
+    trigger_evidence.add_argument("movement_id")
+    trigger_recheck = sub.add_parser("trigger-recheck", help="Recheck one trigger")
+    trigger_recheck.add_argument("movement_id")
+    trigger_recheck.add_argument("--dry-run", action="store_true", required=True)
+    trigger_suppressed = sub.add_parser("trigger-suppressed", help="Recent stops")
+    trigger_suppressed.add_argument("--hours", type=int, default=24)
+    for command, help_text in (
+        ("trigger-confirmation-report", "Independent confirmation metrics"),
+        ("trigger-source-report", "Confirmation source metrics"),
+        ("trigger-later-review", "Later outcome review metrics"),
+    ):
+        parser = sub.add_parser(command, help=help_text)
+        parser.add_argument("--days", type=int, default=7)
+    publication_check = sub.add_parser(
+        "publication-evidence-check", help="Validate one public evidence bundle"
+    )
+    publication_check.add_argument("candidate_id")
+    sub.add_parser(
+        "publication-license-status", help="Publication license fail-safe status"
+    )
     sub.add_parser("market-data-status", help="Multi-asset monitor status")
     sub.add_parser("market-watchlist", help="Configured multi-asset watchlist")
     market_check = sub.add_parser("market-check", help="Safely inspect one market symbol")
@@ -1249,11 +1491,6 @@ def main() -> None:
     shadow_list.add_argument("--days", type=int, default=30)
     shadow_show = sub.add_parser("shadow-show")
     shadow_show.add_argument("candidate_id")
-    shadow_approve = sub.add_parser("shadow-approve")
-    shadow_approve.add_argument("candidate_id")
-    shadow_reject = sub.add_parser("shadow-reject")
-    shadow_reject.add_argument("candidate_id")
-    shadow_reject.add_argument("--reason", required=True)
     shadow_report_parser = sub.add_parser("shadow-report")
     shadow_report_parser.add_argument("--days", type=int, default=7)
     sub.add_parser("heartbeat-status")
@@ -1261,12 +1498,12 @@ def main() -> None:
     heartbeat_test.add_argument("--dry-run", action="store_true", required=True)
     runtime_manifest = sub.add_parser("runtime-manifest")
     runtime_manifest.add_argument("--write", action="store_true")
+    cleanup = sub.add_parser("cleanup", help="期限切れの生成物を安全に削除")
+    cleanup.add_argument("--dry-run", action="store_true")
     sub.add_parser("alerts-self-test",help="Test alert writes without touching production files")
     alerts=sub.add_parser("alerts", help="Local operational alerts")
     alerts.add_argument("--clear-resolved",action="store_true")
     radar.add_argument("--refresh",action="store_true")
-    quote=sub.add_parser("quote-queue",help="手動引用候補を表示（自動投稿なし）")
-    quote.add_argument("--today",action="store_true"); quote.add_argument("--pending",action="store_true")
     experiments=sub.add_parser("experiments",help="投稿実験のvariant集計")
     experiments.add_argument("--weekly",action="store_true")
     series=sub.add_parser("series-drafts",help="定番シリーズの草案生成（自動投稿なし）")
@@ -1297,6 +1534,23 @@ def main() -> None:
     elif args.cmd == "ai-batch-submit": cmd_ai_batch_submit(args.input, args.operation)
     elif args.cmd == "ai-batch-cancel": cmd_ai_batch_cancel(args.batch_id)
     elif args.cmd == "xai-status": cmd_xai_status()
+    elif args.cmd in {
+        "xai-run","xai-events","xai-event-show","xai-observations","xai-delta",
+        "xai-accounts","xai-expert-watch","xai-exploration-status",
+        "xai-content-opportunities","xai-budget-status","xai-key-safety-status",
+        "xai-integrate","xai-import-legacy","xai-integrated-results",
+        "xai-integrated-show","xai-integrated-drafts","xai-integrated-usage",
+        "xai-shadow-report","xai-social-report",
+    }:
+        cmd_xai_social(
+            args.cmd,
+            dry_run=getattr(args,"dry_run",False),
+            event_id=getattr(args,"event_id",""),
+            limit=getattr(args,"limit",50),
+            days=getattr(args,"days",30),
+            event_ids=getattr(args,"event_ids",[]),
+            analysis_id=getattr(args,"analysis_id",""),
+        )
     elif args.cmd == "rss-status": cmd_rss_status()
     elif args.cmd == "impression-strategy-status": cmd_impression_strategy_status()
     elif args.cmd == "xai-smoke":
@@ -1321,6 +1575,21 @@ def main() -> None:
     elif args.cmd == "td-license-status": cmd_td_license_status()
     elif args.cmd == "td-license-checklist": cmd_td_license_checklist()
     elif args.cmd == "market-publication-status": cmd_market_publication_status()
+    elif args.cmd in {
+        "trigger-status", "trigger-pending", "trigger-show",
+        "trigger-evidence", "trigger-recheck", "trigger-suppressed",
+        "trigger-confirmation-report", "trigger-source-report",
+        "trigger-later-review", "publication-evidence-check",
+        "publication-license-status",
+    }:
+        cmd_trigger_evidence(
+            args.cmd,
+            movement_id=getattr(args, "movement_id", ""),
+            candidate_id=getattr(args, "candidate_id", ""),
+            days=getattr(args, "days", 7),
+            hours=getattr(args, "hours", 24),
+            dry_run=getattr(args, "dry_run", False),
+        )
     elif args.cmd in ("market-data-status", "market-data-enable-status"): cmd_market_data_status()
     elif args.cmd == "market-watchlist": cmd_market_watchlist()
     elif args.cmd == "market-check": cmd_market_check(args.symbol)
@@ -1334,7 +1603,7 @@ def main() -> None:
     elif args.cmd == "xai-roi-report": cmd_xai_roi(args.days)
     elif args.cmd in ("xai-roi", "xai-funnel", "xai-cost-breakdown", "xai-cache-status"):
         cmd_xai_quality(args.cmd, days=args.days)
-    elif args.cmd in ("shadow-list", "shadow-show", "shadow-approve", "shadow-reject", "shadow-report"):
+    elif args.cmd in ("shadow-list", "shadow-show", "shadow-report"):
         cmd_shadow(
             args.cmd,
             candidate_id=getattr(args, "candidate_id", ""),
@@ -1345,10 +1614,11 @@ def main() -> None:
         cmd_external_heartbeat(args.cmd)
     elif args.cmd == "runtime-manifest":
         cmd_runtime_manifest(args.write)
+    elif args.cmd == "cleanup":
+        cmd_cleanup(dry_run=args.dry_run)
     elif args.cmd == "alerts-self-test": cmd_alert_self_test()
     elif args.cmd == "alerts": cmd_alerts(args.clear_resolved)
     elif args.cmd == "radar": cmd_radar(args.refresh)
-    elif args.cmd == "quote-queue": cmd_quote_queue(args.today,args.pending)
     elif args.cmd == "experiments": cmd_experiments(args.weekly)
     elif args.cmd == "series-drafts": cmd_series_drafts(args.series_id)
 

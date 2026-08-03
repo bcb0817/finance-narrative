@@ -3,7 +3,7 @@ import sys
 import json
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 # --- パス・ブートストラップ: src 配下の各機能ディレクトリを import 可能にする ---
@@ -278,7 +278,70 @@ def build_contextual_finance_prompt(
 """
 
 
-def _choose_prompt(item: NewsItem, *, with_link: bool = False, diagram: bool = False) -> str:
+def _integrated_prompt_context(research_context: dict | None) -> str:
+    context = research_context or {}
+    if not context.get("xai_integrated_context_used"):
+        return ""
+    summary = str(context.get("xai_integrated_summary") or "")[:500]
+    quality = str(context.get("xai_integrated_evidence_quality") or "low")
+    readiness = str(context.get("xai_integrated_posting_readiness") or "")
+    requires_confirmation = bool(
+        context.get("xai_integrated_requires_confirmation")
+    )
+    return f"""
+
+【X上の反応を含む統合リサーチ（事実ソースではなく編集参考）】
+- 統合された市場の見方: {summary}
+- 証拠品質: {quality}
+- 判定: {readiness}
+- 追加確認が必要: {str(requires_confirmation).lower()}
+
+利用ルール:
+- ニュースタイトルと正式ソースを事実の基準にする
+- 統合リサーチは「市場では〜との見方」のような解釈整理にだけ使う
+- 追加確認が必要な内容、因果関係、未確認の数字を本文で断定しない
+- 反応数をX全体や市場全体の総意として表現しない
+"""
+
+
+def _provider_isolated_prompt_context(research_context: dict | None) -> str:
+    context = research_context or {}
+    if not context.get("provider_isolated_editorial"):
+        return ""
+    return """
+
+【公式ソース限定の市場解説】
+- この投稿の根拠は上記の公式ソースと見出しだけ
+- Twelve Dataその他の市場データAPI、内部検知、価格、騰落率、時間足を使わない
+- 現在の相場方向、現在値、急騰・急落を推測または追加しない
+- 見出しにない数字を追加しない
+- チャートやリアルタイムデータを参照したような表現をしない
+- 発表の意味、注目点、次に確認する公式情報を中心に説明する
+"""
+
+
+def _independent_confirmation_prompt_context(
+    research_context: dict | None,
+) -> str:
+    context = research_context or {}
+    if not context.get("independent_confirmation"):
+        return ""
+    return """
+
+【独立確認ソース限定】
+- 内部の市場監視は、このニュースを調べるきっかけにすぎない
+- 投稿の事実・数値・解説は、上記ニュースタイトルと独立ソースだけを根拠にする
+- 内部監視の価格、騰落率、方向、時間幅、チャートを推測・引用・再計算しない
+- タイトルにない数値やリアルタイム相場を追加しない
+- 原因と値動きの因果関係を断定しない
+- 「別の公開情報で確認できた事実」と「考えられる市場の注目点」を分ける
+"""
+
+
+def _choose_prompt(
+    item: NewsItem, *, with_link: bool = False, diagram: bool = False,
+    research_context: dict | None = None,
+) -> str:
     """背景解説が必要かを判定し、適切なプロンプトを返す（ログ付き）。"""
     needs, reason = needs_background_context(item)
     if needs:
@@ -296,34 +359,48 @@ def _choose_prompt(item: NewsItem, *, with_link: bool = False, diagram: bool = F
         prompt += prompt_context(item.title)
     except Exception as exc:
         logger.warning("teacher context unavailable; generation continues: %s", type(exc).__name__)
+    prompt += _integrated_prompt_context(research_context)
+    prompt += _provider_isolated_prompt_context(research_context)
+    prompt += _independent_confirmation_prompt_context(research_context)
     return prompt
 
 
-def generate_tweet_with_link(item: NewsItem) -> str:
-    prompt = _choose_prompt(item, with_link=True)
+def generate_tweet_with_link(
+    item: NewsItem, *, research_context: dict | None = None
+) -> str:
+    prompt = _choose_prompt(item, with_link=True, research_context=research_context)
     text = generate_by_openai(prompt, max_tokens=2000)
     return f"{text}\n{item.url}"
 
 
-def generate_tweet_without_link(item: NewsItem) -> str:
-    prompt = _choose_prompt(item, with_link=False)
+def generate_tweet_without_link(
+    item: NewsItem, *, research_context: dict | None = None
+) -> str:
+    prompt = _choose_prompt(item, with_link=False, research_context=research_context)
     return generate_by_openai(prompt, max_tokens=2000)
 
 
-def generate_tweet_diagram(item: NewsItem) -> str:
-    prompt = _choose_prompt(item, diagram=True)
+def generate_tweet_diagram(
+    item: NewsItem, *, research_context: dict | None = None
+) -> str:
+    prompt = _choose_prompt(item, diagram=True, research_context=research_context)
     return generate_by_openai(prompt, max_tokens=4000)
 
 
-def create_tweet(mode: str, item: NewsItem, *, style: str = "breaking_news") -> str:
+def create_tweet(
+    mode: str, item: NewsItem, *, style: str = "breaking_news",
+    research_context: dict | None = None,
+) -> str:
     if mode == "link":
         logger.info("リンクあり投稿を生成中...")
-        return generate_tweet_with_link(item)
+        return generate_tweet_with_link(item, research_context=research_context)
     if mode == "diagram":
         logger.info("図解形式の投稿を生成中...")
-        return generate_tweet_diagram(item)
+        return generate_tweet_diagram(item, research_context=research_context)
     logger.info("リンクなし投稿を生成中...")
-    prompt = _choose_prompt(item, with_link=False) + "\n\n【今回の編集ルール】\n" + generation_rules(style)
+    prompt = _choose_prompt(
+        item, with_link=False, research_context=research_context
+    ) + "\n\n【今回の編集ルール】\n" + generation_rules(style)
     return enforce_hashtag_limit(generate_by_openai(prompt, max_tokens=2000))
 
 
@@ -416,6 +493,29 @@ def ensure_postable(text: str, *, max_chars: int = 240) -> tuple[bool, str, str,
     if len(shortened_text) > MAX_POST_LENGTH:
         return False, shortened_text, f"too_long_after_shorten:{len(shortened_text)}", shortened
     return True, shortened_text, "ok_after_shorten", shortened
+
+
+def append_source_attribution(
+    text: str, source: str, *, max_chars: int = 280
+) -> str:
+    """Keep an independent source visible without cutting it off."""
+    label = f"\n出典: {str(source or '公開情報').strip()}"
+    body_limit = max(1, max_chars - len(label))
+    body = str(text or "").strip()
+    if len(body) > body_limit:
+        candidate = body[:body_limit].rstrip()
+        sentence_end = max(
+            candidate.rfind("。"),
+            candidate.rfind("！"),
+            candidate.rfind("？"),
+            candidate.rfind("\n"),
+        )
+        if sentence_end >= 100:
+            candidate = candidate[:sentence_end + 1].rstrip()
+        else:
+            candidate = candidate.rstrip("、,，:：;； ") + "。"
+        body = candidate[:body_limit].rstrip()
+    return f"{body}{label}"
 
 
 def handle_image_post(item: NewsItem, impact: dict | None = None) -> None:
@@ -760,25 +860,263 @@ def main(mode: str = "image") -> None:
         cand_theme = cand_impact.get("theme_relevance", 0)
         cand_scope = cand_impact.get("market_scope", "-")
         cand_should = cand_impact.get("should_post", False)
+        try:
+            from common.data_governance import provider_isolated_editorial_decision
+            editorial_decision = provider_isolated_editorial_decision(
+                source_url=cand.url,
+                source_group=getattr(cand, "source_group", ""),
+                provider_lineage=[],
+            )
+        except Exception:
+            editorial_decision = {
+                "allowed": False, "reason": "editorial_governance_unavailable"
+            }
+        editorial_text = f"{cand.title} {cand.source}".lower()
+        editorial_topic = (
+            "fx_official_context"
+            if any(word in editorial_text for word in (
+                "currency", "foreign exchange", "dollar", "yen", "為替", "ドル", "円"
+            ))
+            else "market_official_context"
+        )
+        cand_impact["provider_isolated_editorial"] = bool(
+            editorial_decision.get("allowed")
+        )
+        cand_impact["provider_isolated_reason"] = editorial_decision.get("reason")
+        cand_impact["provider_isolated_source_host"] = editorial_decision.get(
+            "source_host"
+        )
+        cand_impact["provider_isolated_topic"] = editorial_topic
+        cand_impact["market_data_provider_lineage"] = []
+        cand_impact["twelvedata_used_for_post"] = False
+        cand_impact["live_price_used"] = False
+        cand_impact["provider_chart_used"] = False
 
         try:
-            from common.xai_integration import match_topic
-            matched=match_topic(cand.title,radar_topics)
+            from market_data.editorial_bridge import match_candidate
+            from common.data_governance import independent_confirmation_decision
+            from market_data.evidence_flow import (
+                evaluate_candidate,
+                get_trigger,
+                record_suppression,
+            )
+            independent_match = match_candidate(cand)
+            trigger_evidence = (
+                get_trigger(str(independent_match.get("trigger_id") or ""))
+                if independent_match else None
+            )
+            independent_decision = (
+                independent_confirmation_decision(
+                    source_url=cand.url,
+                    source_group=getattr(cand, "source_group", ""),
+                    publication_provider_lineage=[],
+                    internal_trigger_providers=[
+                        str(independent_match.get("internal_trigger_provider") or "")
+                    ],
+                    includes_trigger_values=False,
+                    includes_trigger_chart=False,
+                )
+                if independent_match
+                else {"allowed": False, "reason": "no_internal_trigger_match"}
+            )
+            evidence_result = (
+                evaluate_candidate(cand, trigger_evidence)
+                if independent_decision.get("allowed") and trigger_evidence
+                else None
+            )
+            public_bundle = (
+                evidence_result.get("bundle") if evidence_result else None
+            )
+            evidence_allowed = bool(
+                public_bundle
+                and public_bundle.get("validation", {}).get("allowed")
+            )
+            if independent_match and not evidence_allowed:
+                record_suppression(
+                    str(independent_match.get("trigger_id") or ""),
+                    reason=(
+                        public_bundle.get("validation", {}).get("reason")
+                        if public_bundle else
+                        independent_decision.get("reason")
+                    ),
+                    confidence=(
+                        evidence_result.get("causal", {}).get(
+                            "causal_confidence", "unknown"
+                        )
+                        if evidence_result else "unknown"
+                    ),
+                    mode=(
+                        public_bundle.get("content_mode", "unknown_cause")
+                        if public_bundle else "unknown_cause"
+                    ),
+                )
+        except Exception as exc:
+            independent_match = None
+            trigger_evidence = None
+            evidence_result = None
+            public_bundle = None
+            evidence_allowed = False
+            independent_decision = {
+                "allowed": False,
+                "reason": f"independent_confirmation_unavailable:{type(exc).__name__}",
+            }
+        cand_impact["independent_confirmation"] = bool(
+            independent_match
+            and independent_decision.get("allowed")
+            and evidence_allowed
+        )
+        cand_impact["independent_confirmation_decision"] = independent_decision
+        cand_impact["public_evidence_bundle"] = public_bundle
+        if independent_match and not evidence_allowed:
+            cand_should = False
+            cand_impact["should_post"] = False
+            cand_impact["skip_reason"] = (
+                "market_trigger_evidence_blocked:"
+                + str(
+                    (public_bundle or {}).get("validation", {}).get("reason")
+                    or independent_decision.get("reason")
+                    or "causal_confidence_insufficient"
+                )
+            )
+        if cand_impact["independent_confirmation"]:
+            cand_impact.update({
+                "internal_market_trigger_id": independent_match.get("trigger_id"),
+                "internal_market_trigger_symbol": independent_match.get("symbol"),
+                "internal_trigger_provider_lineage": [
+                    independent_match.get("internal_trigger_provider")
+                ],
+                "independent_source_title": independent_match.get(
+                    "independent_source_title"
+                ),
+                "independent_source_url": independent_match.get(
+                    "independent_source_url"
+                ),
+                "independent_source_name": independent_match.get(
+                    "independent_source_name"
+                ),
+                "market_data_provider_lineage": [],
+                "twelvedata_internal_trigger": (
+                    independent_match.get("internal_trigger_provider")
+                    == "twelvedata"
+                ),
+                "twelvedata_used_for_post": False,
+                "live_price_used": False,
+                "provider_chart_used": False,
+                "causal_confidence": evidence_result.get("causal", {}).get(
+                    "causal_confidence"
+                ),
+                "causal_claim_allowed": evidence_result.get("causal", {}).get(
+                    "causal_claim_allowed", False
+                ),
+                "publication_mode": public_bundle.get("content_mode"),
+                "public_evidence_bundle_id": public_bundle.get("bundle_id"),
+                "publication_candidate_id": public_bundle.get("candidate_id"),
+                "publication_evidence_ids": public_bundle.get("evidence_ids", []),
+            })
+
+        try:
+            from common.xai_social_intelligence import (
+                cost_attribution, match_integrated_analysis, match_news_event,
+                record_content_opportunity_use, record_integrated_analysis_use,
+                shadow_record_news,
+            )
+            social_match = match_news_event(
+                title=cand.title,
+                url=cand.url,
+                tickers=cand_impact.get("tickers") or (),
+                event_type=str(cand_impact.get("event_type") or ""),
+                published_at=str(getattr(cand, "published", "") or ""),
+            )
+            integrated_match = match_integrated_analysis(
+                title=cand.title,
+                tickers=cand_impact.get("tickers") or (),
+                event_id=str((social_match or {}).get("candidate_id") or ""),
+            )
         except Exception:
-            matched=None
-        cand_impact["x_topic_velocity"] = float((matched or {}).get("velocity_score",0) or 0)
-        cand_impact["x_topic_acceleration"] = float((matched or {}).get("acceleration_score",0) or 0)
+            social_match=None
+            integrated_match=None
+        try:
+            from common.xai_integration import match_topic
+            legacy_match=match_topic(cand.title,radar_topics)
+        except Exception:
+            legacy_match=None
+        observation=(social_match or {}).get("observation") or {}
+        social_metrics=observation.get("metrics") or {}
+        social_delta=observation.get("delta") or {}
+        interpretation=observation.get("interpretation") or {}
+        matched=social_match or legacy_match
+        cand_impact["x_topic_velocity"] = float(
+            social_delta.get("observed_velocity_score")
+            or (legacy_match or {}).get("velocity_score",0) or 0)
+        cand_impact["x_topic_acceleration"] = float(
+            social_delta.get("observed_acceleration_score")
+            or (legacy_match or {}).get("acceleration_score",0) or 0)
         cand_impact["news_confirmation_status"] = "rss_corroborated" if matched else "not_radar_sourced"
-        cand_impact["radar_influenced"] = bool(matched)
+        cand_impact["radar_influenced"] = False
+        cand_impact["xai_researched"] = bool(social_match)
         cand_impact["xai_signal_used"] = bool(matched)
-        cand_impact["xai_signal_reason"] = "safe_priority_tiebreaker" if matched else "no_match"
-        cand_impact["xai_priority_applied"] = bool(matched)
-        cand_impact["radar_run_id"] = (matched or {}).get("radar_run_id")
-        cand_impact["radar_topic"] = (matched or {}).get("topic")
-        cand_impact["xai_cost_attribution_usd"] = (matched or {}).get("xai_cost_attribution_usd",0)
-        cand_impact["observed_velocity_score"] = (matched or {}).get("velocity_score")
-        cand_impact["observed_acceleration_score"] = (matched or {}).get("acceleration_score")
-        cand_impact["source_confirmation"] = (matched or {}).get("source_confirmation")
+        cand_impact["xai_signal_reason"] = "event_match_shadow_only" if social_match else ("legacy_observed_match" if legacy_match else "no_match")
+        cand_impact["xai_priority_applied"] = False
+        cand_impact["radar_run_id"] = observation.get("run_id") or (legacy_match or {}).get("radar_run_id")
+        cand_impact["xai_run_id"] = observation.get("run_id")
+        cand_impact["xai_event_id"] = (social_match or {}).get("candidate_id")
+        cand_impact["radar_topic"] = (social_match or {}).get("canonical_topic") or (legacy_match or {}).get("topic")
+        cand_impact["xai_cost_attribution_usd"] = (
+            cost_attribution(str(observation.get("run_id") or ""))
+            if social_match else
+            (legacy_match or {}).get("xai_cost_attribution_usd",0)
+        )
+        cand_impact["observed_velocity_score"] = social_delta.get("observed_velocity_score") or (legacy_match or {}).get("velocity_score")
+        cand_impact["observed_acceleration_score"] = social_delta.get("observed_acceleration_score") or (legacy_match or {}).get("acceleration_score")
+        cand_impact["unique_accounts"] = social_metrics.get("unique_accounts")
+        cand_impact["independent_commentary_count"] = social_metrics.get("independent_commentary_count")
+        cand_impact["dominant_narrative"] = interpretation.get("dominant_narrative")
+        cand_impact["dissent_present"] = bool(interpretation.get("strongest_dissent"))
+        cand_impact["misconception_present"] = bool(interpretation.get("common_misconception"))
+        cand_impact["official_participation"] = social_metrics.get("official_account_participation")
+        cand_impact["xai_confidence"] = interpretation.get("confidence")
+        cand_impact["source_confirmation"] = (legacy_match or {}).get("source_confirmation")
+        cand_impact["xai_integrated_analysis_id"] = (
+            integrated_match or {}
+        ).get("analysis_id")
+        cand_impact["xai_integrated_summary"] = (
+            integrated_match or {}
+        ).get("integrated_summary")
+        cand_impact["xai_integrated_evidence_quality"] = (
+            (integrated_match or {}).get("evidence") or {}
+        ).get("quality")
+        cand_impact["xai_integrated_posting_readiness"] = (
+            integrated_match or {}
+        ).get("posting_readiness")
+        cand_impact["xai_integrated_requires_confirmation"] = bool(
+            (integrated_match or {}).get("facts_needing_confirmation")
+            or (integrated_match or {}).get("potentially_false_claims")
+        )
+        cand_impact["xai_integrated_context_used"] = bool(integrated_match)
+        cand_impact["xai_integrated_priority_applied"] = False
+        if social_match:
+            try:
+                shadow_record_news(
+                    title=cand.title, matched=social_match,
+                    original_rank=rank, hypothetical_rank=max(1,rank-1),
+                )
+                record_content_opportunity_use(
+                    run_id=str(observation.get("run_id") or ""),
+                    event_id=str((social_match or {}).get("candidate_id") or ""),
+                    use_type="news_candidate_match",
+                    reference_id=f"{cand.url}|{cand.title}",
+                )
+            except Exception:
+                logger.warning("xAI shadow順位記録に失敗（選定は継続）")
+        if integrated_match:
+            try:
+                record_integrated_analysis_use(
+                    analysis_id=str(integrated_match.get("analysis_id") or ""),
+                    use_type="news_candidate_context",
+                    reference_id=f"{cand.url}|{cand.title}",
+                )
+            except Exception:
+                logger.warning("xAI統合分析の利用記録に失敗（選定は継続）")
 
         try:
             duplicate = semantic_duplicate(cand.title, title=cand.title, source_url=cand.url)
@@ -796,7 +1134,7 @@ def main(mode: str = "image") -> None:
             try:
                 from common.xai_integration import record_downstream_event
                 record_downstream_event(
-                    str(matched.get("radar_run_id") or ""),
+                    str(observation.get("run_id") or matched.get("radar_run_id") or ""),
                     "news_candidate",
                     candidate_id=f"{cand.url}|{cand.title}",
                 )
@@ -919,6 +1257,14 @@ def main(mode: str = "image") -> None:
     impact.update({"post_type":selected_style,"experiment_variant":selected_style,
                    "experiment_hypothesis":"投稿タイプ別に話題速度補正後の24h実績を比較",
                    "source_type":getattr(item,"source_group","market_news"),"opinion_strength":"moderate"})
+    if impact.get("provider_isolated_editorial") and mode in ("image", "diagram"):
+        logger.info("公式ソース隔離投稿では市場データ風チャートを使わず通常文章へ変更")
+        mode = "normal"
+    if impact.get("independent_confirmation") and mode in ("image", "diagram"):
+        logger.info(
+            "独立確認投稿では内部市場データ由来の図表混入を防ぐため通常文章へ変更"
+        )
+        mode = "normal"
 
     if mode in ("image", "diagram"):
         diagram_judgement = assess_diagram_value(
@@ -953,11 +1299,198 @@ def main(mode: str = "image") -> None:
         handle_image_post(item, impact=impact)
         return
 
-    tweet = create_tweet(mode, item, style=selected_style)
+    if impact.get("independent_confirmation"):
+        movement_id = str(impact.get("internal_market_trigger_id") or "")
+        try:
+            from market_data.evidence_flow import (
+                generate_structured_publication,
+                record_publication_result,
+                record_suppression,
+            )
+        except Exception as exc:
+            _gate_log(
+                should_post=True,
+                skip_reason=(
+                    "structured_evidence_gate_unavailable:"
+                    f"{type(exc).__name__}"
+                ),
+                dry_run=DRY_RUN,
+                actual_post_attempted=False,
+            )
+            logger.exception(
+                "Market-triggered publication stopped because the evidence "
+                "gate could not be loaded"
+            )
+            return
+        try:
+            structured_publication = generate_structured_publication(
+                impact.get("public_evidence_bundle") or {}
+            )
+        except Exception as exc:
+            structured_publication = {
+                "status": "rejected",
+                "rejection_reason": (
+                    f"structured_generation_failed:{type(exc).__name__}"
+                ),
+            }
+        impact["structured_publication_status"] = structured_publication.get(
+            "status"
+        )
+        impact["structured_output_validation"] = structured_publication.get(
+            "validation"
+        )
+        impact["structured_post_value"] = structured_publication.get(
+            "post_value"
+        )
+        minimum_value = int(os.getenv("MARKET_TRIGGER_MIN_POST_VALUE", "6"))
+        structured_value = int(structured_publication.get("post_value") or 0)
+        if (
+            structured_publication.get("status") != "ready"
+            or structured_value < minimum_value
+        ):
+            stop_reason = (
+                structured_publication.get("rejection_reason")
+                or structured_publication.get("validation", {}).get("reason")
+                or "post_value_below_threshold"
+            )
+            record_suppression(
+                movement_id,
+                reason=f"structured_publication_blocked:{stop_reason}",
+                confidence=str(impact.get("causal_confidence") or "unknown"),
+                mode=str(impact.get("publication_mode") or "unknown_cause"),
+            )
+            record_publication_result(
+                movement_id,
+                posted=False,
+                mode=str(impact.get("publication_mode") or "unknown_cause"),
+                reason=str(stop_reason),
+                post_value=structured_value,
+            )
+            _gate_log(
+                should_post=True,
+                skip_reason=f"structured_publication_blocked:{stop_reason}",
+                dry_run=DRY_RUN,
+                actual_post_attempted=False,
+            )
+            logger.warning(
+                "Market-triggered publication stopped by structured evidence gate: %s",
+                stop_reason,
+            )
+            return
+        tweet = str(structured_publication.get("draft_text") or "").strip()
+        impact["post_value"] = structured_value
+        impact["structured_recommended_mode"] = structured_publication.get(
+            "recommended_mode"
+        )
+        impact["structured_claims"] = structured_publication.get("claims", [])
+    else:
+        tweet = create_tweet(
+            mode, item, style=selected_style, research_context=impact
+        )
+
+    def _record_independent_stop(reason: str) -> None:
+        if not impact.get("independent_confirmation"):
+            return
+        try:
+            from market_data.evidence_flow import (
+                record_publication_result,
+                record_suppression,
+            )
+            movement_id = str(
+                impact.get("internal_market_trigger_id") or ""
+            )
+            publication_mode = str(
+                impact.get("publication_mode") or "unknown_cause"
+            )
+            record_suppression(
+                movement_id,
+                reason=reason,
+                confidence=str(
+                    impact.get("causal_confidence") or "unknown"
+                ),
+                mode=publication_mode,
+            )
+            record_publication_result(
+                movement_id,
+                posted=False,
+                mode=publication_mode,
+                reason=reason,
+                post_value=int(impact.get("post_value") or 0),
+            )
+        except Exception:
+            logger.exception(
+                "Market-trigger stop metric recording failed safely"
+            )
+
+    if impact.get("provider_isolated_editorial"):
+        try:
+            from common.data_governance import (
+                validate_provider_isolated_editorial_text,
+            )
+            editorial_text_gate = validate_provider_isolated_editorial_text(
+                tweet, source_title=item.title,
+            )
+        except Exception as exc:
+            editorial_text_gate = {
+                "allowed": False,
+                "reason": f"editorial_text_gate_unavailable:{type(exc).__name__}",
+            }
+        impact["provider_isolated_text_gate"] = editorial_text_gate
+        if not editorial_text_gate.get("allowed"):
+            _record_independent_stop(
+                "official_editorial_blocked:"
+                f"{editorial_text_gate.get('reason')}"
+            )
+            _gate_log(
+                should_post=True,
+                skip_reason=f"official_editorial_blocked:{editorial_text_gate.get('reason')}",
+                dry_run=DRY_RUN,
+                actual_post_attempted=False,
+            )
+            logger.warning(
+                "公式ソース隔離投稿を安全停止: %s", editorial_text_gate
+            )
+            return
+    if impact.get("independent_confirmation"):
+        try:
+            from common.data_governance import (
+                validate_provider_isolated_editorial_text,
+            )
+            independent_text_gate = validate_provider_isolated_editorial_text(
+                tweet,
+                source_title=item.title,
+            )
+        except Exception as exc:
+            independent_text_gate = {
+                "allowed": False,
+                "reason": f"independent_text_gate_unavailable:{type(exc).__name__}",
+            }
+        impact["independent_confirmation_text_gate"] = independent_text_gate
+        if not independent_text_gate.get("allowed"):
+            _record_independent_stop(
+                "independent_confirmation_blocked:"
+                f"{independent_text_gate.get('reason')}"
+            )
+            _gate_log(
+                should_post=True,
+                skip_reason=(
+                    "independent_confirmation_blocked:"
+                    f"{independent_text_gate.get('reason')}"
+                ),
+                dry_run=DRY_RUN,
+                actual_post_attempted=False,
+            )
+            logger.warning(
+                "独立確認投稿を安全停止: %s",
+                independent_text_gate,
+            )
+            return
+        tweet = append_source_attribution(tweet, item.source)
 
     # 文字数オーバーは即スキップせず短縮を試す。NG/空はスキップ。
     ok, tweet, safety_result, shortened = ensure_postable(tweet, max_chars=240)
     if not ok:
+        _record_independent_stop(f"safety_check:{safety_result}")
         _gate_log(should_post=True, skip_reason=safety_result,
                   safety_check_result=safety_result, shortened=shortened)
         logger.info(f"safety未通過のためスキップ: {safety_result}\n{tweet}")
@@ -966,12 +1499,44 @@ def main(mode: str = "image") -> None:
     review = review_tweet_with_openai(tweet, item.title, item.source)
     logger.info(f"レビュー結果: {json.dumps(review, ensure_ascii=False)}")
     if not review.get("ok_to_post", False):
+        _record_independent_stop(
+            f"ai_review_ng:{review.get('reason', '')}"
+        )
         _gate_log(should_post=True, skip_reason=f"ai_review_ng:{review.get('reason','')}",
                   safety_check_result=safety_result, shortened=shortened)
         return
 
     tweet_id = post_tweet(tweet)
     add_posted_entry(item, tweet_id=tweet_id, mode=mode, impact=impact, text=tweet)
+    if impact.get("independent_confirmation"):
+        try:
+            from market_data.evidence_flow import (
+                get_trigger,
+                record_publication_result,
+            )
+            trigger = get_trigger(
+                str(impact.get("internal_market_trigger_id") or "")
+            ) or {}
+            detected_at = datetime.fromisoformat(
+                str(trigger.get("detected_at") or "").replace("Z", "+00:00")
+            )
+            if detected_at.tzinfo is None:
+                detected_at = detected_at.replace(tzinfo=timezone.utc)
+            elapsed = max(
+                0.0,
+                (datetime.now(timezone.utc) - detected_at.astimezone(timezone.utc))
+                .total_seconds(),
+            )
+            record_publication_result(
+                str(impact.get("internal_market_trigger_id") or ""),
+                posted=bool(tweet_id),
+                mode=str(impact.get("publication_mode") or "unknown"),
+                reason="posted" if tweet_id else "dry_run_not_posted",
+                detection_to_post_seconds=elapsed,
+                post_value=int(impact.get("post_value") or 0),
+            )
+        except Exception:
+            logger.exception("Market-trigger publication metric recording failed safely")
     _gate_log(should_post=True, skip_reason=("-" if tweet_id else "dry_run_not_posted"),
               safety_check_result=safety_result, shortened=shortened, tweet_id=tweet_id,
               dry_run=DRY_RUN, actual_post_attempted=_post_enabled_now())

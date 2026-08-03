@@ -60,6 +60,28 @@ class GrowthSystemTests(unittest.TestCase):
                 self.assertTrue(path.exists())
                 self.assertIn("heartbeat_stale",[r["code"] for r in rows])
 
+    def test_repeated_fx_quality_blocks_create_high_alert(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); (root/"state"/"fx").mkdir(parents=True); (root/"logs").mkdir()
+            (root/"state"/"daemon_heartbeat.json").write_text(
+                json.dumps({"updated_at":datetime.now(JST).isoformat()}),encoding="utf-8"
+            )
+            (root/"state"/"fx"/"state.json").write_text(json.dumps({
+                "quality_health":{"status":"degraded","consecutive_blocked_runs":3}
+            }),encoding="utf-8")
+            env={"STATE_DIR":str(root/"state"),"LOG_DIR":str(root/"logs"),
+                 "OUTPUT_DIR":str(root/"outputs"),"ALERTS_ENABLED":"true",
+                 "FX_ENABLED":"true","FX_QUALITY_ALERT_CONSECUTIVE_RUNS":"3",
+                 "XAI_ENABLED":"false","MARKET_DATA_ENABLED":"false"}
+            provider=type("Provider",(),{"available":True})()
+            with patch.dict(os.environ,env), patch(
+                "fx_alert.providers.get_provider",
+                return_value=type("Factory",(),{"status":lambda self,probe=False:provider})(),
+            ):
+                _,rows=write_alerts()
+            alert=next(row for row in rows if row["code"]=="fx_data_quality_degraded")
+            self.assertEqual(alert["severity"],"high")
+
     def test_discord_sends_only_alert_state_changes(self):
         class Response:
             def raise_for_status(self): return None

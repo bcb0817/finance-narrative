@@ -141,9 +141,21 @@ class XaiCompletionTests(unittest.TestCase):
         }]
         ordinary = Candidate("General market recap")
         matched = Candidate("NVDA AI chips demand rises")
-        result = prioritize_candidates([ordinary, matched], topics)
+        with patch.dict(os.environ, {"XAI_SCORE_BONUS_ENABLED": "true"}):
+            result = prioritize_candidates([ordinary, matched], topics)
         self.assertIs(result[0], matched)
         self.assertEqual(match_topic(ordinary.title, topics), None)
+
+    def test_xai_score_bonus_is_disabled_by_default(self):
+        topics = [{
+            "topic": "AI chips", "tickers": ["NVDA"],
+            "velocity_score": 8, "acceleration_score": 9,
+        }]
+        ordinary = Candidate("General market recap")
+        matched = Candidate("NVDA AI chips demand rises")
+        with patch.dict(os.environ, {"XAI_SCORE_BONUS_ENABLED": "false"}):
+            result = prioritize_candidates([ordinary, matched], topics)
+        self.assertEqual(result, [ordinary, matched])
 
     def test_downstream_funnel_counts_candidate_post_and_metrics(self):
         root = Path(self.temp.name)

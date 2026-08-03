@@ -1,0 +1,9 @@
+{
+  "description": "Human-reviewed X account quality overrides. Do not add guessed accounts. Optional 0-100 fields: officiality, historical_accuracy, source_proximity, domain_expertise, original_post_ratio, citation_rate, correction_history, low_hype, low_duplication, low_affiliate_tendency.",
+  "high_priority": [],
+  "official": [],
+  "expert": [],
+  "media": [],
+  "low_quality": [],
+  "excluded": []
+}

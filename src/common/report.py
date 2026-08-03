@@ -302,7 +302,7 @@ def _market_data_summary_lines(days: int) -> list[str]:
             by_type[str(row.get("alert_type", "unknown"))] += 1
             by_window[str(row.get("window_minutes", "unknown"))] += 1
         usage = usage_summary()
-        return [
+        lines = [
             "",
             "--- Multi-Asset Market Data ---",
             f"  detected={len(movements)} alerts={len(alerts)}",
@@ -313,8 +313,76 @@ def _market_data_summary_lines(days: int) -> list[str]:
             f"  credits_today={usage['daily_credits']}/{usage['daily_limit']} "
             f"cache_hit_rate={usage['cache_hit_rate']:.1%} errors={usage['errors']}",
         ]
+        try:
+            from market_data.evidence_flow import report_lines
+            lines.extend(report_lines(days=max(1, days)))
+        except Exception as exc:
+            lines.extend([
+                "",
+                "--- Market Trigger Evidence ---",
+                f"  unavailable ({type(exc).__name__})",
+            ])
+        return lines
     except Exception as exc:
         return ["", "--- Multi-Asset Market Data ---", f"  unavailable ({type(exc).__name__})"]
+
+
+def _xai_social_summary_lines(days: int) -> list[str]:
+    try:
+        from common.xai_social_intelligence import social_report
+
+        report = social_report(days=max(1, days))
+        return [
+            "",
+            "--- xAI X Social Intelligence ---",
+            f"  runs={report.get('runs', 0)} success_rate={report.get('success_rate')} "
+            f"by_mode={report.get('runs_by_mode', {})}",
+            f"  cost_usd={report.get('total_cost_usd', 0)} "
+            f"avg_run={report.get('cost_per_run_usd')} "
+            f"avg_success={report.get('cost_per_success_usd')}",
+            f"  researched_events={report.get('events_researched', 0)} "
+            f"useful_events={report.get('useful_events', 0)} "
+            f"useful_rate={report.get('useful_insight_rate')}",
+            f"  independent_posts={report.get('unique_original_posts', 0)} "
+            f"accounts={report.get('unique_accounts', 0)} "
+            f"commentary={report.get('independent_commentary_count', 0)}",
+            f"  official={report.get('official_participations', 0)} "
+            f"experts={report.get('expert_participations', 0)} "
+            f"dissent={report.get('dissent_count', 0)} "
+            f"misconceptions={report.get('misconception_count', 0)}",
+            f"  max_velocity={report.get('max_velocity_event_id')}:"
+            f"{report.get('max_observed_velocity_score')} "
+            f"max_acceleration={report.get('max_acceleration_event_id')}:"
+            f"{report.get('max_observed_acceleration_score')}",
+            f"  content_opportunities={report.get('content_opportunities_created', 0)} "
+            f"news_candidates={report.get('news_candidates_created', 0)} "
+            f"posts_created={report.get('posts_created', 0)}",
+            f"  integrated={report.get('integrated_analyses', 0)} "
+            f"ready_draft={report.get('integrated_ready_for_draft', 0)} "
+            f"needs_confirmation={report.get('integrated_requires_confirmation', 0)} "
+            f"high_evidence={report.get('integrated_high_evidence', 0)}",
+            f"  integrated_changes={report.get('integrated_material_changes', 0)} "
+            f"drafts={report.get('integrated_drafts', 0)} "
+            f"uses={report.get('integrated_usage', 0)} "
+            f"post_conversions={report.get('integrated_post_conversions', 0)} "
+            f"unused={report.get('integrated_unused_rate')}",
+            f"  unused_rate={report.get('unused_result_rate')} "
+            f"cost/insight={report.get('cost_per_useful_insight_usd')} "
+            f"cost/post={report.get('cost_per_post_usd')} "
+            f"cost/1k_imp={report.get('cost_per_1000_impressions_usd')}",
+            f"  xai_post_median={report.get('xai_post_median_impressions', {})} "
+            f"normal_median={report.get('normal_post_median_impressions', {})}",
+            f"  exploration_ratio={(report.get('exploration') or {}).get('budget_share')} "
+            f"exploration_unused={(report.get('exploration') or {}).get('unused_rate')}",
+            f"  cache_hit_rate={report.get('cache_hit_rate')} "
+            f"event_cache={report.get('social_event_cache', {})}",
+            f"  remaining_budget_usd={report.get('remaining_budget_usd')} "
+            f"failures={report.get('failure_reasons', {})}",
+            f"  key_rotation_verified={report.get('key_rotation_verified')}",
+            f"  next={report.get('recommended_next_allocation')}",
+        ]
+    except Exception as exc:
+        return ["", "--- xAI X Social Intelligence ---", f"  unavailable ({type(exc).__name__})"]
 
 
 def build_report(days: int = 1) -> str:
@@ -354,7 +422,11 @@ def build_report(days: int = 1) -> str:
     if not metrics:
         return (
             "レポート対象の投稿がありません（まだ実投稿していない可能性があります）。\n"
-            + "\n".join(_fx_summary_lines(days) + _market_data_summary_lines(days))
+            + "\n".join(
+                _fx_summary_lines(days)
+                + _market_data_summary_lines(days)
+                + _xai_social_summary_lines(days)
+            )
         )
 
     cutoff = datetime.now(JST) - timedelta(days=days)
@@ -369,6 +441,7 @@ def build_report(days: int = 1) -> str:
     lines: list[str] = []
     lines.extend(_fx_summary_lines(days))
     lines.extend(_market_data_summary_lines(days))
+    lines.extend(_xai_social_summary_lines(days))
     lines.append("=" * 60)
     lines.append(f"投稿実績レポート  {datetime.now(JST):%Y-%m-%d %H:%M} JST")
     lines.append("=" * 60)

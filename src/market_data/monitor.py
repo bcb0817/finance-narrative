@@ -145,6 +145,34 @@ def evaluate_bars(
         "fixture_results.jsonl" if fixture else "movements.jsonl",
         movement.to_dict(),
     )
+    if not fixture and not dry_run:
+        try:
+            from .editorial_bridge import enqueue_internal_trigger
+            enqueue_internal_trigger(
+                trigger_id=movement.movement_id,
+                symbol=movement.symbol,
+                asset_type=movement.asset_type,
+                provider=movement.data_source,
+                detected_at=movement.detected_at,
+                movement_window=str(movement.window_minutes),
+                internal_movement_class=movement.alert_type,
+                data_quality=movement.data_quality,
+            )
+        except Exception as exc:
+            log_error({
+                "bot": "market-data",
+                "stage": "independent_confirmation_queue",
+                "error_type": type(exc).__name__,
+            })
+        try:
+            from common.xai_social_intelligence import enqueue_market_movement
+            enqueue_market_movement(movement)
+        except Exception as exc:
+            log_error({
+                "bot": "market-data",
+                "stage": "xai_event_queue",
+                "error_type": type(exc).__name__,
+            })
     shadow = None
     if not fixture:
         shadow = create_candidate(
@@ -232,6 +260,17 @@ def run_market_monitor(*, dry_run: bool = False) -> dict[str, Any]:
                 "error_type": type(exc).__name__,
             })
     cleanup()
+    recheck_result = None
+    if not dry_run:
+        try:
+            from .evidence_flow import process_due_rechecks
+            recheck_result = process_due_rechecks(dry_run=False)
+        except Exception as exc:
+            recheck_result = {
+                "status": "failed_safe",
+                "error_type": type(exc).__name__,
+                "daemon_safe": True,
+            }
     cross_result = None
     if (
         os.getenv("CROSS_ASSET_ENABLED", "true").lower() in TRUE_VALUES
@@ -241,10 +280,21 @@ def run_market_monitor(*, dry_run: bool = False) -> dict[str, Any]:
         signal = classify_cross_asset(cross_changes)
         append_jsonl("cross_asset_signals.jsonl", signal.to_dict())
         cross_result = signal.to_dict()
+        if not dry_run:
+            try:
+                from common.xai_social_intelligence import enqueue_cross_asset_signal
+                enqueue_cross_asset_signal(cross_result)
+            except Exception as exc:
+                log_error({
+                    "bot": "market-data",
+                    "stage": "xai_cross_asset_queue",
+                    "error_type": type(exc).__name__,
+                })
     status = "completed" if any(row["status"] not in {"provider_unavailable"} for row in results) else "provider_unavailable"
     log_run({"bot": "market-data", "result": status, "symbols": [row["symbol"] for row in results]})
     return {
         "status": status, "results": results, "cross_asset_signal": cross_result,
+        "trigger_rechecks": recheck_result,
         "usage": usage_summary(),
     }
 

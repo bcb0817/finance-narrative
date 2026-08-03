@@ -71,9 +71,9 @@ class XaiMediaTests(unittest.TestCase):
         self.assertTrue(idle_fallback_allowed(good,"AI chip update"))
         self.assertFalse(idle_fallback_allowed({**good,"post_value":5},"AI chip update"))
         self.assertFalse(idle_fallback_allowed({**good,"x_topic_acceleration":0},"AI chip update"))
-    def test_quote_queue_is_pending_and_has_three_drafts(self):
+    def test_quote_queue_human_review_workflow_is_disabled(self):
         topic=_parse_topics(self.sample())[0]; rows=enqueue_from_topics([topic])
-        self.assertEqual(rows[0]["status"],"pending"); self.assertEqual(len(rows[0]["comment_drafts"]),3); self.assertEqual(len(list_queue(pending=True)),1)
+        self.assertEqual(rows,[]); self.assertEqual(len(list_queue(pending=True)),0)
     def test_variant_summary_and_missing_data(self):
         posts=[{"tweet_id":"1","experiment_variant":"comparison"},{"tweet_id":"2","experiment_variant":"comparison"}]
         metrics=[{"tweet_id":"1","stage":"24h","impressions_per_hour":10}]

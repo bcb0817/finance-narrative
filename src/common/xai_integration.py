@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from datetime import datetime, timedelta
 from typing import Any
@@ -36,7 +37,9 @@ def match_topic(title: str, topics: list[dict]) -> dict | None:
 
 
 def prioritize_candidates(candidates: list[Any], topics: list[dict]) -> list[Any]:
-    """Use xAI only as a stable tie-breaker; it never bypasses posting gates."""
+    """Apply xAI ranking after explicit enablement or machine-only qualification."""
+    if not _score_bonus_effective():
+        return list(candidates)
     ranked = []
     for original_index, candidate in enumerate(candidates):
         matched = match_topic(str(getattr(candidate, "title", "")), topics)
@@ -49,6 +52,56 @@ def prioritize_candidates(candidates: list[Any], topics: list[dict]) -> list[Any
         ))
     ranked.sort(key=lambda item: item[:4])
     return [item[-1] for item in ranked]
+
+
+def _score_bonus_effective() -> bool:
+    true_values = {"1", "true", "yes", "on"}
+    if os.getenv("XAI_SCORE_BONUS_ENABLED", "false").lower() in true_values:
+        return True
+    if os.getenv("XAI_SCORE_BONUS_AUTO_ENABLE", "true").lower() not in true_values:
+        return False
+    path = state_dir() / "xai" / "score_bonus_shadow.jsonl"
+    if not path.exists():
+        return False
+    rows = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            value = json.loads(line)
+            if isinstance(value, dict):
+                rows.append(value)
+        except json.JSONDecodeError:
+            continue
+    required_days = int(os.getenv("XAI_SCORE_BONUS_SHADOW_DAYS", "14") or 14)
+    minimum_rows = int(
+        os.getenv("XAI_SCORE_BONUS_MIN_OBSERVATIONS", "20") or 20
+    )
+    observed_dates = {
+        str(row.get("timestamp") or "")[:10]
+        for row in rows if row.get("timestamp")
+    }
+    if len(observed_dates) < required_days or len(rows) < minimum_rows:
+        return False
+    tweet_ids = {
+        str(row.get("tweet_id") or "")
+        for row in rows if row.get("tweet_id")
+    }
+    metrics_path = state_dir() / "metrics_snapshots.jsonl"
+    if not metrics_path.exists():
+        return False
+    for line in metrics_path.read_text(
+        encoding="utf-8", errors="replace"
+    ).splitlines():
+        try:
+            metric = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            str(metric.get("tweet_id") or "") in tweet_ids
+            and metric.get("stage") == "24h"
+            and metric.get("status") == "collected"
+        ):
+            return True
+    return False
 
 
 def _events_path():

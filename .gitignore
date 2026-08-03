@@ -223,6 +223,7 @@ data/xai/
 data/fx/
 data/market_data/
 data/logo_cache/
+data/runtime/
 *.bak-*
 knowledge/*
 !knowledge/README.md

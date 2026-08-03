@@ -80,6 +80,9 @@ RSS_FEEDS: dict[str, dict] = {
     # --- 2. official_macro（公式マクロ：高めの priority） ---
     "Fed Monetary Policy":    {"url": "https://www.federalreserve.gov/feeds/press_monetary.xml",          "group": "official_macro",  "priority": 10},
     "Fed Speeches":           {"url": "https://www.federalreserve.gov/feeds/speeches.xml",                "group": "official_macro",  "priority": 8},
+    "Fed H10 Japanese Yen":   {"url": "https://www.federalreserve.gov/feeds/data/H10_H10_RXI_N.B.JA.xml", "group": "official_fx",     "priority": 10},
+    "ECB USD Reference Rate": {"url": "https://www.ecb.europa.eu/rss/fxref-usd.html",                     "group": "official_fx",     "priority": 9},
+    "ECB JPY Reference Rate": {"url": "https://www.ecb.europa.eu/rss/fxref-jpy.html",                     "group": "official_fx",     "priority": 9},
     "BEA":                    {"url": "https://apps.bea.gov/rss/rss.xml",                                 "group": "official_macro",  "priority": 8},
     "BLS Latest Indicators":  {"url": "https://www.bls.gov/feed/bls_latest.rss",                          "group": "official_macro",  "priority": 9},
     "EIA":                    {"url": "https://www.eia.gov/rss/todayinenergy.xml",                        "group": "official_macro",  "priority": 7},
@@ -93,6 +96,7 @@ RSS_FEEDS: dict[str, dict] = {
 GROUP_SCORE: dict[str, float] = {
     "market_news":     0.0,
     "official_macro":  4.0,
+    "official_fx":     4.0,
     "official_regulatory": 3.0,
     "official_policy": 0.0,
     "company_filings": 3.0,
@@ -567,13 +571,40 @@ def fetch_news_candidates(
     if excluded:
         logger.info(f"投稿済み {excluded} 件を除外しました")
 
+    # Official FX rate feeds are an independent confirmation source, not a
+    # standalone posting feed.  They become eligible only after a real
+    # non-numeric internal market trigger matches the currency topic.
+    try:
+        from market_data.editorial_bridge import match_candidate
+        available = [
+            item for item in available
+            if item.source_group != "official_fx" or match_candidate(item)
+        ]
+    except Exception as exc:
+        logger.warning(
+            "official FX confirmation gate unavailable; official FX items blocked: %s",
+            type(exc).__name__,
+        )
+        available = [
+            item for item in available if item.source_group != "official_fx"
+        ]
+
     recent = [it for it in available if is_recent(it, hours=24)]
     if not recent:
         logger.warning("24時間以内の未投稿ニュースなし。全未投稿件から選択します")
         recent = available
 
+    ranked_items = sorted(recent, key=score_item, reverse=True)
+    try:
+        from market_data.editorial_bridge import prioritize_candidates
+        ranked_items = prioritize_candidates(ranked_items)
+    except Exception as exc:
+        logger.warning(
+            "independent confirmation prioritization unavailable: %s",
+            type(exc).__name__,
+        )
     ranked = diversify_ranked_items(
-        sorted(recent, key=score_item, reverse=True),
+        ranked_items,
         limit=limit,
     )
     for it in ranked[:3]:

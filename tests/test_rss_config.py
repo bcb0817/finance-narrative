@@ -25,11 +25,13 @@ class RssConfigTests(unittest.TestCase):
         self.assertIn("SEC Press Releases", RSS_FEEDS)
         self.assertIn("White House News", RSS_FEEDS)
 
-    def test_news_expansion_has_nineteen_feeds(self):
-        self.assertEqual(len(RSS_FEEDS), 19)
+    def test_news_expansion_has_independent_fx_feeds(self):
+        self.assertEqual(len(RSS_FEEDS), 22)
         for name in (
             "WSJ Markets", "Financial Times Markets", "NYT Business",
             "Fortune", "TechCrunch AI", "CoinDesk",
+            "Fed H10 Japanese Yen", "ECB USD Reference Rate",
+            "ECB JPY Reference Rate",
         ):
             self.assertIn(name, RSS_FEEDS)
 
