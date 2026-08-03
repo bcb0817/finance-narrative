@@ -65,7 +65,10 @@ class FxProviderMonitorTests(unittest.TestCase):
             "STATE_DIR": temp,
             "FX_DATA_MAX_AGE_SECONDS": "600",
             "FX_QUALITY_ALERT_CONSECUTIVE_RUNS": "3",
-        }):
+        }), patch(
+            "common.operations_alerts.evaluate",
+            return_value=[{"code": "fx_data_quality_degraded"}],
+        ), patch("common.operations_alerts.send_discord_alerts") as notify:
             bars = [
                 replace(item, timestamp=item.timestamp - timedelta(hours=2))
                 for item in movement_fixture()
@@ -75,6 +78,7 @@ class FxProviderMonitorTests(unittest.TestCase):
             third = evaluate(bars, dry_run=True)
             self.assertEqual(third["status"], "quality_degraded")
             self.assertEqual(third["health"]["consecutive_blocked_runs"], 3)
+            notify.assert_called_once_with([{"code": "fx_data_quality_degraded"}])
 
     def test_provider_symbol(self):
         self.assertEqual(provider_symbol("USDJPY"), "USD/JPY")

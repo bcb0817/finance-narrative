@@ -75,6 +75,19 @@ def _record_quality_health(
     state["quality_health"] = health
     state["updated_at"] = health["updated_at"]
     save_state(state)
+    threshold = int(os.getenv("FX_QUALITY_ALERT_CONSECUTIVE_RUNS", "3") or 3)
+    previous_blocked = int(previous.get("consecutive_blocked_runs", 0) or 0)
+    if consecutive == threshold or (good and previous_blocked >= threshold):
+        try:
+            from common.operations_alerts import evaluate as evaluate_operations
+            from common.operations_alerts import send_discord_alerts
+
+            # Send the complete active-alert set so the shared Discord state
+            # can report this transition without resolving unrelated alerts.
+            send_discord_alerts(evaluate_operations())
+        except Exception:
+            # Notification failure must not stop market monitoring.
+            pass
     return health
 
 
