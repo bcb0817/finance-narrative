@@ -508,6 +508,14 @@ day falls behind its linear 20-post pace, the daemon may run one additional news
 cycle, still subject to the hourly/daily limits, X-write budget, duplicate
 checks, factual review, and financial-safety review.
 
+An independent `goal-monitor` runs every 180 minutes. It compares completed
+posts with the cumulative pace required to reach 20 by 23:00 JST, records the
+result in `data/learning/daily_goal_3h_monitor.jsonl`, and applies a three-tier
+recovery policy when behind. Recovery can expand fresh-candidate assessment,
+RSS scan depth, quiet-post timing, bounded hourly/daily capacity, and immediate
+news catch-up runs. The same three-hour slot is idempotent, and hard safety,
+licensing, duplicate, API-budget, and credential controls remain unchanged.
+
 ```powershell
 .\.venv\Scripts\python.exe local_finance_bot.py daily-goal-status
 ```

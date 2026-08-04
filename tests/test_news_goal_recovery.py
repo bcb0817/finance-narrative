@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,11 +13,14 @@ from news_bot.post import (
     candidate_scan_limits,
     failed_market_enrichment_is_veto,
 )
+from common import daily_post_goal
 
 
 class NewsGoalRecoveryTests(unittest.TestCase):
     def test_scan_pool_is_larger_than_new_candidate_assessment_limit(self):
-        with patch.dict(os.environ, {
+        with tempfile.TemporaryDirectory() as temp, patch.object(
+            daily_post_goal, "state_dir", return_value=Path(temp)
+        ), patch.dict(os.environ, {
             "NEWS_MAX_CANDIDATES": "15",
             "NEWS_CANDIDATE_POOL_SIZE": "75",
         }):

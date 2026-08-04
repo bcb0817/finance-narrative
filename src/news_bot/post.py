@@ -597,8 +597,12 @@ def _env_int(name: str, default: int) -> int:
 
 def candidate_scan_limits() -> tuple[int, int]:
     """Return new-candidate assessment and ranked-pool scan limits."""
-    assess_limit = max(1, min(25, _env_int("NEWS_MAX_CANDIDATES", 15)))
-    configured_pool = max(1, _env_int("NEWS_CANDIDATE_POOL_SIZE", 75))
+    assess_limit = max(
+        1, min(25, _goal_effective_int("NEWS_MAX_CANDIDATES", 15))
+    )
+    configured_pool = max(
+        1, _goal_effective_int("NEWS_CANDIDATE_POOL_SIZE", 75)
+    )
     scan_limit = max(assess_limit, min(150, configured_pool))
     return assess_limit, scan_limit
 

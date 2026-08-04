@@ -92,6 +92,9 @@ class ImpressionStrategyTests(unittest.TestCase):
                     "HOURLY_POST_LIMIT",
                     "X_WRITE_MONTHLY_BUDGET_USD",
                     "SAFETY_REVIEW_RETRY_LIMIT",
+                    "NEWS_MAX_CANDIDATES",
+                    "NEWS_CANDIDATE_POOL_SIZE",
+                    "DAILY_GOAL_MAX_EXTRA_NEWS_RUNS",
                 ],
             )
             self.assertIn("翌日のimp/hを改善", context)

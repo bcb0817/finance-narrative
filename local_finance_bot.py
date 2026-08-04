@@ -64,7 +64,9 @@ except Exception:
     ET = timezone(timedelta(hours=-4))  # 近似フォールバック
 
 BOTS = ("news", "narrative", "market-map", "weekly")
-SCHED_BOTS = BOTS + ("metrics", "report", "radar", "fx-monitor", "market-data")
+SCHED_BOTS = BOTS + (
+    "metrics", "report", "radar", "fx-monitor", "market-data", "goal-monitor"
+)
 
 DEFAULT_SCHEDULE = {
     "news": {"enabled": True, "type": "interval_minutes", "every_minutes": 30,
@@ -81,6 +83,7 @@ DEFAULT_SCHEDULE = {
     "radar": {"enabled": False, "type": "daily_jst_times", "times": ["21:00","22:30"]},
     "fx-monitor": {"enabled": True, "type": "interval_minutes", "every_minutes": 5},
     "market-data": {"enabled": True, "type": "interval_minutes", "every_minutes": 15},
+    "goal-monitor": {"enabled": True, "type": "interval_minutes", "every_minutes": 180},
 }
 
 
@@ -133,6 +136,14 @@ def load_schedule() -> dict:
     market_interval = os.environ.get("MARKET_DATA_POLL_INTERVAL_MINUTES", "15")
     if market_interval.isdigit() and int(market_interval) > 0:
         sched["market-data"]["every_minutes"] = int(market_interval)
+    sched["goal-monitor"]["enabled"] = bool(
+        sched["goal-monitor"].get("enabled", True)
+    ) and os.environ.get("DAILY_GOAL_3H_MONITOR_ENABLED", "true").lower() in (
+        "1", "true", "yes"
+    )
+    goal_interval = os.environ.get("DAILY_GOAL_MONITOR_INTERVAL_MINUTES", "180")
+    if goal_interval.isdigit() and int(goal_interval) > 0:
+        sched["goal-monitor"]["every_minutes"] = int(goal_interval)
     return sched
 
 
@@ -286,9 +297,12 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
     if force:
         env["FORCE_POST"] = "true"  # スケジュール条件のみ無視。安全審査はバイパスしない。
 
-    if bot in ("report", "metrics", "radar", "fx-monitor", "market-data"):
+    if bot in (
+        "report", "metrics", "radar", "fx-monitor", "market-data", "goal-monitor"
+    ):
         started = datetime.now(JST)
         print(f"[RUN] bot={bot} started={started:%Y-%m-%d %H:%M:%S}")
+        monitor_result = None
         try:
             if bot == "report":
                 report_result=cmd_report(days=1)
@@ -318,6 +332,26 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
                     "review_blocked", "content_blocked", "image_blocked",
                 }:
                     raise RuntimeError(f"fx-alert failed: {fx_result.get('status','unknown')}")
+            elif bot == "goal-monitor":
+                from common.daily_post_goal import run_intraday_monitor
+                monitor_result = run_intraday_monitor()
+                print(json.dumps(monitor_result, ensure_ascii=False))
+                try:
+                    from common.operations_alerts import queue_discord_log
+                    queue_discord_log(
+                        "goal-monitor.result",
+                        (
+                            f"3時間目標監視: {monitor_result.get('completed', 0)}/"
+                            f"{monitor_result.get('target', 20)} "
+                            f"必要={monitor_result.get('expected', 0)} "
+                            f"不足={monitor_result.get('deficit', 0)} "
+                            f"状態={monitor_result.get('status')} "
+                            f"施策={','.join(monitor_result.get('actions') or ['なし'])}"
+                        ),
+                        level="INFO",
+                    )
+                except Exception:
+                    pass
             else:
                 from market_data.monitor import run_market_monitor
                 market_result = run_market_monitor()
@@ -337,6 +371,8 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
                   "started_at": started.isoformat(),
                   "finished_at": datetime.now(JST).isoformat(),
                   "returncode": rc, "error": err, "post_enabled": post_enabled()}
+        if monitor_result is not None:
+            result["monitor_result"] = monitor_result
         log_run(result)
         state = load_state(); state.setdefault(bot, {})
         state[bot]["last_run_at"] = started.isoformat()
@@ -1302,12 +1338,22 @@ def cmd_daemon() -> None:
                              "reason": f"delayed {delay_min:.0f}min > window {window}min"})
                     continue
                 _write_heartbeat(status="running", next_bot=due_bot, next_run=nxt)
-                run_bot(due_bot, sched=sched)
-                if due_bot == "news":
+                run_result = run_bot(due_bot, sched=sched)
+                if due_bot in {"news", "goal-monitor"}:
                     try:
                         from common.daily_post_goal import catch_up_runs
                         from common.posting_policy import policy_status
-                        extra_runs = catch_up_runs()
+                        if due_bot == "goal-monitor":
+                            extra_runs = int(
+                                (run_result.get("monitor_result") or {}).get(
+                                    "recovery_news_runs", 0
+                                )
+                                or 0
+                            )
+                            reason = "3時間監視"
+                        else:
+                            extra_runs = catch_up_runs()
+                            reason = "目標ペース未達"
                         for extra_index in range(extra_runs):
                             limits = policy_status()
                             if (
@@ -1319,7 +1365,7 @@ def cmd_daemon() -> None:
                                 print("[daemon] news catch-up: 投稿上限または予算のため停止")
                                 break
                             print(
-                                "[daemon] news catch-up: 目標ペース未達のため追加実行 "
+                                f"[daemon] news catch-up: {reason}による追加実行 "
                                 f"{extra_index + 1}/{extra_runs}"
                             )
                             run_bot("news", sched=sched)

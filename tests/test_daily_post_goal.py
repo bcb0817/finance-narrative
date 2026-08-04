@@ -151,6 +151,50 @@ class DailyPostGoalTests(unittest.TestCase):
                 20,
             )
 
+    def test_three_hour_monitor_applies_recovery_and_is_idempotent(self):
+        now = datetime(2026, 8, 4, 12, 0, tzinfo=goal.JST)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            rows = [
+                {
+                    "tweet_id": str(index),
+                    "posted_at": now.replace(hour=index, minute=0).isoformat(),
+                }
+                for index in range(3)
+            ]
+            (root / "posted_history.json").write_text(
+                json.dumps(rows), encoding="utf-8"
+            )
+            env = {
+                "DAILY_POST_TARGET": "20",
+                "DAILY_GOAL_3H_MONITOR_ENABLED": "true",
+                "DAILY_GOAL_TARGET_DEADLINE_HOUR": "23",
+                "NEWS_MAX_CANDIDATES": "15",
+                "NEWS_CANDIDATE_POOL_SIZE": "75",
+                "DAILY_GOAL_MAX_EXTRA_NEWS_RUNS": "1",
+                "HOURLY_POST_LIMIT": "2",
+            }
+            with patch.object(goal, "state_dir", return_value=root), patch.dict(
+                os.environ, env
+            ):
+                first = goal.run_intraday_monitor(now)
+                second = goal.run_intraday_monitor(now)
+                policy = json.loads(
+                    (root / "learning" / "daily_post_goal_policy.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+            self.assertEqual(first["status"], "recovery_started")
+            self.assertEqual(first["adaptation_tier"], 3)
+            self.assertEqual(first["recovery_news_runs"], 2)
+            self.assertEqual(policy["effective_values"]["NEWS_MAX_CANDIDATES"], 25)
+            self.assertEqual(policy["effective_values"]["NEWS_CANDIDATE_POOL_SIZE"], 125)
+            self.assertEqual(policy["effective_values"]["HOURLY_POST_LIMIT"], 4)
+            self.assertEqual(second["status"], "already_monitored")
+            self.assertTrue(
+                (root / "learning" / "daily_goal_3h_monitor.jsonl").exists()
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

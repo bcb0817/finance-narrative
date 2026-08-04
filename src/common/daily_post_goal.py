@@ -25,6 +25,9 @@ TUNABLE_DEFAULTS = {
     "HOURLY_POST_LIMIT": 2,
     "X_WRITE_MONTHLY_BUDGET_USD": 15.0,
     "SAFETY_REVIEW_RETRY_LIMIT": 0,
+    "NEWS_MAX_CANDIDATES": 15,
+    "NEWS_CANDIDATE_POOL_SIZE": 75,
+    "DAILY_GOAL_MAX_EXTRA_NEWS_RUNS": 1,
 }
 TUNABLE_BOUNDS = {
     "NEWS_IDLE_FALLBACK_HOURS": (1, 3),
@@ -39,6 +42,9 @@ TUNABLE_BOUNDS = {
     "HOURLY_POST_LIMIT": (2, 4),
     "X_WRITE_MONTHLY_BUDGET_USD": (15.0, 20.0),
     "SAFETY_REVIEW_RETRY_LIMIT": (0, 1),
+    "NEWS_MAX_CANDIDATES": (15, 25),
+    "NEWS_CANDIDATE_POOL_SIZE": (75, 125),
+    "DAILY_GOAL_MAX_EXTRA_NEWS_RUNS": (1, 2),
 }
 MISSED_STEPS = {
     "NEWS_IDLE_FALLBACK_HOURS": -1,
@@ -53,6 +59,9 @@ MISSED_STEPS = {
     "HOURLY_POST_LIMIT": 1,
     "X_WRITE_MONTHLY_BUDGET_USD": 1.0,
     "SAFETY_REVIEW_RETRY_LIMIT": 1,
+    "NEWS_MAX_CANDIDATES": 5,
+    "NEWS_CANDIDATE_POOL_SIZE": 25,
+    "DAILY_GOAL_MAX_EXTRA_NEWS_RUNS": 1,
 }
 PROTECTED_CONTROLS = (
     "OPENAI_MONTHLY_BUDGET_USD",
@@ -160,13 +169,7 @@ def catch_up_runs(now: datetime | None = None) -> int:
         return 0
     expected = expected_post_count(current)
     deficit = max(0, expected - completed)
-    try:
-        maximum = max(
-            0,
-            min(2, int(os.getenv("DAILY_GOAL_MAX_EXTRA_NEWS_RUNS", "1") or 1)),
-        )
-    except ValueError:
-        maximum = 1
+    maximum = max(0, min(2, effective_int("DAILY_GOAL_MAX_EXTRA_NEWS_RUNS", 1)))
     return min(maximum, deficit)
 
 
@@ -200,6 +203,118 @@ def effective_float(name: str, default: float) -> float:
         except ValueError:
             return default
     return float(_current_values()[name])
+
+
+def _runtime_bounds(name: str) -> tuple[float, float]:
+    low, high = TUNABLE_BOUNDS[name]
+    if name == "DAILY_POST_LIMIT":
+        high = float(os.getenv("DAILY_GOAL_DAILY_LIMIT_HARD_MAX", "40") or 40)
+    elif name == "HOURLY_POST_LIMIT":
+        high = float(os.getenv("DAILY_GOAL_HOURLY_LIMIT_HARD_MAX", "4") or 4)
+    elif name == "X_WRITE_MONTHLY_BUDGET_USD":
+        high = float(
+            os.getenv("DAILY_GOAL_X_WRITE_BUDGET_HARD_MAX_USD", "20") or 20
+        )
+    return float(low), float(high)
+
+
+def run_intraday_monitor(now: datetime | None = None) -> dict[str, Any]:
+    """Monitor the 20-post pace once per three-hour JST window and act."""
+    current = (now or datetime.now(JST)).astimezone(JST)
+    target = daily_target()
+    completed = post_count(current.date())
+    expected = expected_post_count(current)
+    deficit = max(0, expected - completed)
+    slot_hour = (current.hour // 3) * 3
+    slot = f"{current.date().isoformat()}T{slot_hour:02d}"
+    enabled = os.getenv("DAILY_GOAL_3H_MONITOR_ENABLED", "true").lower() in TRUE_VALUES
+    state_path = _learning_dir() / "daily_goal_3h_monitor_state.json"
+    prior_state = _read_json(state_path, {})
+    if not enabled:
+        return {
+            "status": "disabled", "slot": slot, "target": target,
+            "completed": completed, "expected": expected, "deficit": deficit,
+            "recovery_news_runs": 0, "actions": [],
+        }
+    if isinstance(prior_state, dict) and prior_state.get("last_slot") == slot:
+        return {
+            "status": "already_monitored", "slot": slot, "target": target,
+            "completed": completed, "expected": expected, "deficit": deficit,
+            "recovery_news_runs": 0, "actions": [],
+        }
+
+    tier = 0 if deficit == 0 else 1 if deficit <= 2 else 2 if deficit <= 5 else 3
+    before = _current_values()
+    after = dict(before)
+    if deficit:
+        multiplier = 1 if tier == 1 else 2 if tier == 2 else 3
+        for name, step in MISSED_STEPS.items():
+            low, high = _runtime_bounds(name)
+            # Safety re-review and hourly capacity reach their bounded maximum
+            # immediately; other controls strengthen with the observed deficit.
+            applied_step = step if name == "SAFETY_REVIEW_RETRY_LIMIT" else step * multiplier
+            after[name] = min(high, max(low, before[name] + applied_step))
+
+    changed = {
+        name: {"before": before[name], "after": after[name]}
+        for name in after if before[name] != after[name]
+    }
+    actions = [f"adjust:{name}" for name in changed]
+    recovery_runs = min(
+        int(after["DAILY_GOAL_MAX_EXTRA_NEWS_RUNS"]),
+        deficit,
+    )
+    if recovery_runs:
+        actions.append(f"run_news:{recovery_runs}")
+
+    policy_payload = {
+        "updated_at": current.isoformat(),
+        "reason": "intraday_3h_target_recovery" if deficit else "intraday_3h_on_pace",
+        "monitor_slot": slot,
+        "target": target,
+        "completed": completed,
+        "expected": expected,
+        "deficit": deficit,
+        "effective_values": after,
+        "changed": changed,
+        "adaptation_tier": tier,
+        "protected_controls_unchanged": list(PROTECTED_CONTROLS),
+        "arbitrary_source_editing": False,
+    }
+    if deficit and changed:
+        _policy_path().write_text(
+            json.dumps(policy_payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    result = {
+        "status": "recovery_started" if deficit else "on_pace",
+        "checked_at": current.isoformat(),
+        "slot": slot,
+        "target": target,
+        "completed": completed,
+        "expected": expected,
+        "deficit": deficit,
+        "remaining_hours": round(
+            max(0.0, (target_deadline_hour() * 60 - current.hour * 60 - current.minute) / 60),
+            2,
+        ),
+        "adaptation_tier": tier,
+        "changed": changed,
+        "actions": actions,
+        "recovery_news_runs": recovery_runs,
+        "protected_controls_unchanged": list(PROTECTED_CONTROLS),
+    }
+    state_path.write_text(
+        json.dumps({"last_slot": slot, "last_result": result}, ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    with (_learning_dir() / "daily_goal_3h_monitor.jsonl").open(
+        "a", encoding="utf-8"
+    ) as handle:
+        handle.write(json.dumps(result, ensure_ascii=False) + "\n")
+    return result
 
 
 def _reviewed_days() -> set[str]:
@@ -340,4 +455,24 @@ def goal_status(now: datetime | None = None) -> dict[str, Any]:
     result["auto_tune_enabled"] = (
         os.getenv("DAILY_GOAL_AUTO_TUNE_ENABLED", "true").lower() in TRUE_VALUES
     )
+    monitor_state = _read_json(
+        _learning_dir() / "daily_goal_3h_monitor_state.json", {}
+    )
+    try:
+        monitor_interval = max(
+            1, int(os.getenv("DAILY_GOAL_MONITOR_INTERVAL_MINUTES", "180") or 180)
+        )
+    except ValueError:
+        monitor_interval = 180
+    result["three_hour_monitor"] = {
+        "enabled": os.getenv(
+            "DAILY_GOAL_3H_MONITOR_ENABLED", "true"
+        ).lower() in TRUE_VALUES,
+        "interval_minutes": monitor_interval,
+        "last_result": (
+            monitor_state.get("last_result")
+            if isinstance(monitor_state, dict)
+            else None
+        ),
+    }
     return result
