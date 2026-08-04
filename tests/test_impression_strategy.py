@@ -83,6 +83,15 @@ class ImpressionStrategyTests(unittest.TestCase):
                     "NEWS_IDLE_FALLBACK_HOURS",
                     "QUIET_MIN_GAP_MINUTES",
                     "QUIET_MAX_GAP_MINUTES",
+                    "NEWS_POST_VALUE_THRESHOLD",
+                    "NEWS_RELEVANCE_THRESHOLD",
+                    "NEWS_BUZZ_THRESHOLD",
+                    "NEWS_NARRATIVE_THRESHOLD",
+                    "NEWS_THEME_THRESHOLD",
+                    "DAILY_POST_LIMIT",
+                    "HOURLY_POST_LIMIT",
+                    "X_WRITE_MONTHLY_BUDGET_USD",
+                    "SAFETY_REVIEW_RETRY_LIMIT",
                 ],
             )
             self.assertIn("翌日のimp/hを改善", context)

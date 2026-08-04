@@ -52,9 +52,14 @@ class DailyPostGoalTests(unittest.TestCase):
             self.assertEqual(first["program_adjustment"]["status"], "applied")
             self.assertEqual(second["program_adjustment"]["status"], "already_applied")
             self.assertEqual(policy["effective_values"]["NEWS_IDLE_FALLBACK_HOURS"], 2)
-            self.assertEqual(policy["effective_values"]["QUIET_MIN_GAP_MINUTES"], 55)
-            self.assertEqual(policy["effective_values"]["QUIET_MAX_GAP_MINUTES"], 110)
-            self.assertIn("DAILY_POST_LIMIT", policy["protected_controls_unchanged"])
+            self.assertEqual(policy["effective_values"]["QUIET_MIN_GAP_MINUTES"], 50)
+            self.assertEqual(policy["effective_values"]["QUIET_MAX_GAP_MINUTES"], 105)
+            self.assertEqual(policy["effective_values"]["NEWS_POST_VALUE_THRESHOLD"], 6)
+            self.assertEqual(policy["effective_values"]["DAILY_POST_LIMIT"], 32)
+            self.assertEqual(policy["effective_values"]["HOURLY_POST_LIMIT"], 3)
+            self.assertEqual(policy["effective_values"]["X_WRITE_MONTHLY_BUDGET_USD"], 16)
+            self.assertEqual(policy["effective_values"]["SAFETY_REVIEW_RETRY_LIMIT"], 1)
+            self.assertIn("fact_confirmation", policy["protected_controls_unchanged"])
             self.assertFalse(policy["arbitrary_source_editing"])
 
     def test_achieved_target_does_not_change_program(self):

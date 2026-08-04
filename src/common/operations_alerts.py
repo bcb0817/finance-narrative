@@ -496,7 +496,12 @@ def notify_impression_strategy(payload: dict, *, session=requests) -> dict:
     if focus:
         lines.append("重点:")
         lines.extend(f"• {item}" for item in focus)
-    lines.append("安全審査・予算・投稿上限は変更していません。")
+    lines.append(
+        "適応制御: 閾値・間隔・投稿上限・X予算・安全再審査をハード上限内で変更。"
+    )
+    lines.append(
+        "固定制御: 事実確認・投資助言禁止・重複防止・ライセンス・キー保護。"
+    )
     request={
         "username":"finance-narrative review",
         "allowed_mentions":{"parse":[]},

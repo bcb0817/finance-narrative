@@ -15,26 +15,54 @@ TUNABLE_DEFAULTS = {
     "NEWS_IDLE_FALLBACK_HOURS": 3,
     "QUIET_MIN_GAP_MINUTES": 60,
     "QUIET_MAX_GAP_MINUTES": 120,
+    "NEWS_POST_VALUE_THRESHOLD": 7,
+    "NEWS_RELEVANCE_THRESHOLD": 8,
+    "NEWS_BUZZ_THRESHOLD": 8,
+    "NEWS_NARRATIVE_THRESHOLD": 8,
+    "NEWS_THEME_THRESHOLD": 8,
+    "DAILY_POST_LIMIT": 30,
+    "HOURLY_POST_LIMIT": 2,
+    "X_WRITE_MONTHLY_BUDGET_USD": 15.0,
+    "SAFETY_REVIEW_RETRY_LIMIT": 0,
 }
 TUNABLE_BOUNDS = {
     "NEWS_IDLE_FALLBACK_HOURS": (1, 3),
-    "QUIET_MIN_GAP_MINUTES": (45, 60),
-    "QUIET_MAX_GAP_MINUTES": (75, 120),
+    "QUIET_MIN_GAP_MINUTES": (30, 60),
+    "QUIET_MAX_GAP_MINUTES": (60, 120),
+    "NEWS_POST_VALUE_THRESHOLD": (6, 8),
+    "NEWS_RELEVANCE_THRESHOLD": (6, 9),
+    "NEWS_BUZZ_THRESHOLD": (6, 9),
+    "NEWS_NARRATIVE_THRESHOLD": (6, 9),
+    "NEWS_THEME_THRESHOLD": (6, 9),
+    "DAILY_POST_LIMIT": (30, 40),
+    "HOURLY_POST_LIMIT": (2, 4),
+    "X_WRITE_MONTHLY_BUDGET_USD": (15.0, 20.0),
+    "SAFETY_REVIEW_RETRY_LIMIT": (0, 1),
 }
 MISSED_STEPS = {
     "NEWS_IDLE_FALLBACK_HOURS": -1,
-    "QUIET_MIN_GAP_MINUTES": -5,
-    "QUIET_MAX_GAP_MINUTES": -10,
+    "QUIET_MIN_GAP_MINUTES": -10,
+    "QUIET_MAX_GAP_MINUTES": -15,
+    "NEWS_POST_VALUE_THRESHOLD": -1,
+    "NEWS_RELEVANCE_THRESHOLD": -1,
+    "NEWS_BUZZ_THRESHOLD": -1,
+    "NEWS_NARRATIVE_THRESHOLD": -1,
+    "NEWS_THEME_THRESHOLD": -1,
+    "DAILY_POST_LIMIT": 2,
+    "HOURLY_POST_LIMIT": 1,
+    "X_WRITE_MONTHLY_BUDGET_USD": 1.0,
+    "SAFETY_REVIEW_RETRY_LIMIT": 1,
 }
 PROTECTED_CONTROLS = (
-    "DAILY_POST_LIMIT",
-    "HOURLY_POST_LIMIT",
-    "X_WRITE_MONTHLY_BUDGET_USD",
-    "NEWS_POST_VALUE_THRESHOLD",
-    "NEWS_RELEVANCE_THRESHOLD",
-    "safety_review",
+    "OPENAI_MONTHLY_BUDGET_USD",
+    "XAI_MONTHLY_BUDGET_USD",
+    "TWELVEDATA_EXTERNAL_DISPLAY_STATUS",
+    "deterministic_safety_check",
     "fact_confirmation",
     "duplicate_prevention",
+    "investment_advice_prohibition",
+    "license_compliance",
+    "api_key_protection",
 )
 
 
@@ -96,16 +124,16 @@ def post_count(day: date) -> int:
     return len(ids) + anonymous
 
 
-def _current_values() -> dict[str, int]:
+def _current_values() -> dict[str, float]:
     stored = _read_json(_policy_path(), {})
     values = stored.get("effective_values", {}) if isinstance(stored, dict) else {}
-    result: dict[str, int] = {}
+    result: dict[str, float] = {}
     for name, default in TUNABLE_DEFAULTS.items():
         try:
-            base = int(os.getenv(name, "") or default)
-            result[name] = int(values.get(name, base))
+            base = float(os.getenv(name, "") or default)
+            result[name] = float(values.get(name, base))
         except (TypeError, ValueError):
-            result[name] = default
+            result[name] = float(default)
     return result
 
 
@@ -116,7 +144,16 @@ def effective_int(name: str, default: int) -> int:
             return int(os.getenv(name, "") or default)
         except ValueError:
             return default
-    return _current_values()[name]
+    return int(round(_current_values()[name]))
+
+
+def effective_float(name: str, default: float) -> float:
+    if name not in TUNABLE_DEFAULTS:
+        try:
+            return float(os.getenv(name, "") or default)
+        except ValueError:
+            return default
+    return float(_current_values()[name])
 
 
 def _reviewed_days() -> set[str]:
@@ -144,6 +181,14 @@ def _apply_missed_day_tuning(completed_day: date, shortfall: int) -> dict[str, A
     if enabled:
         for name, step in MISSED_STEPS.items():
             low, high = TUNABLE_BOUNDS[name]
+            if name == "DAILY_POST_LIMIT":
+                high = float(os.getenv("DAILY_GOAL_DAILY_LIMIT_HARD_MAX", "40") or 40)
+            elif name == "HOURLY_POST_LIMIT":
+                high = float(os.getenv("DAILY_GOAL_HOURLY_LIMIT_HARD_MAX", "4") or 4)
+            elif name == "X_WRITE_MONTHLY_BUDGET_USD":
+                high = float(
+                    os.getenv("DAILY_GOAL_X_WRITE_BUDGET_HARD_MAX_USD", "20") or 20
+                )
             after[name] = min(high, max(low, before[name] + step))
     changed = {
         name: {"before": before[name], "after": after[name]}
@@ -156,6 +201,9 @@ def _apply_missed_day_tuning(completed_day: date, shortfall: int) -> dict[str, A
         "shortfall": shortfall,
         "effective_values": after,
         "changed": changed,
+        "adaptation_tier": min(
+            3, int(_read_json(_policy_path(), {}).get("adaptation_tier", 0) or 0) + 1
+        ),
         "protected_controls_unchanged": list(PROTECTED_CONTROLS),
         "arbitrary_source_editing": False,
     }
@@ -199,9 +247,20 @@ def review_daily_goal(
         "expected_today_by_now": expected_now,
         "today_on_pace": today_count >= expected_now,
         "program_adjustment": adjustment,
-        "quality_gates_relaxed": False,
-        "post_limits_changed": False,
-        "budgets_changed": False,
+        "quality_gates_relaxed": any(
+            name.startswith("NEWS_") and name.endswith("_THRESHOLD")
+            for name in adjustment.get("changed", {})
+        ),
+        "post_limits_changed": any(
+            name in {"DAILY_POST_LIMIT", "HOURLY_POST_LIMIT"}
+            for name in adjustment.get("changed", {})
+        ),
+        "budgets_changed": "X_WRITE_MONTHLY_BUDGET_USD" in adjustment.get("changed", {}),
+        "safety_review_mode": (
+            "retry_review"
+            if effective_int("SAFETY_REVIEW_RETRY_LIMIT", 0) > 0
+            else "standard"
+        ),
     }
     if not already_reviewed and apply_adjustment:
         path = _reviews_path()
@@ -212,7 +271,26 @@ def review_daily_goal(
 
 def goal_status(now: datetime | None = None) -> dict[str, Any]:
     result = review_daily_goal(now=now, apply_adjustment=False)
-    result["effective_tuning"] = _current_values()
+    active_policy = _read_json(_policy_path(), {})
+    effective = _current_values()
+    result["effective_tuning"] = effective
+    result["active_policy"] = active_policy if isinstance(active_policy, dict) else {}
+    result["quality_gates_relaxed"] = any(
+        effective[name] < float(os.getenv(name, "") or TUNABLE_DEFAULTS[name])
+        for name in effective
+        if name.startswith("NEWS_") and name.endswith("_THRESHOLD")
+    )
+    result["post_limits_changed"] = any(
+        effective[name] != float(os.getenv(name, "") or TUNABLE_DEFAULTS[name])
+        for name in ("DAILY_POST_LIMIT", "HOURLY_POST_LIMIT")
+    )
+    result["budgets_changed"] = (
+        effective["X_WRITE_MONTHLY_BUDGET_USD"]
+        != float(
+            os.getenv("X_WRITE_MONTHLY_BUDGET_USD", "")
+            or TUNABLE_DEFAULTS["X_WRITE_MONTHLY_BUDGET_USD"]
+        )
+    )
     result["auto_tune_enabled"] = (
         os.getenv("DAILY_GOAL_AUTO_TUNE_ENABLED", "true").lower() in TRUE_VALUES
     )

@@ -77,6 +77,7 @@ def _tickers(text: str) -> set[str]:
 
 def check_post(text: str, *, now: datetime | None = None) -> PolicyDecision:
     """Check a prospective X write against daily, hourly and content limits."""
+    from common.daily_post_goal import effective_float, effective_int
     now = now or datetime.now(JST)
     if URL_RE.search(text or ""):
         return PolicyDecision(False, "url_not_allowed")
@@ -84,13 +85,13 @@ def check_post(text: str, *, now: datetime | None = None) -> PolicyDecision:
     entries = [(e, _posted_at(e)) for e in _history()]
     entries = [(e, dt.astimezone(JST)) for e, dt in entries if dt is not None]
     today = [(e, dt) for e, dt in entries if dt.date() == now.date()]
-    daily_limit = _env_int("DAILY_POST_LIMIT", 30)
+    daily_limit = effective_int("DAILY_POST_LIMIT", 30)
     if len(today) >= daily_limit:
         return PolicyDecision(False, f"daily_limit:{len(today)}/{daily_limit}")
 
     hour_start = now.replace(minute=0, second=0, microsecond=0)
     hour_count = sum(1 for _, dt in today if dt >= hour_start)
-    hourly_limit = _env_int("HOURLY_POST_LIMIT", 2)
+    hourly_limit = effective_int("HOURLY_POST_LIMIT", 2)
     if hour_count >= hourly_limit:
         return PolicyDecision(False, f"hourly_limit:{hour_count}/{hourly_limit}")
 
@@ -108,13 +109,14 @@ def check_post(text: str, *, now: datetime | None = None) -> PolicyDecision:
 
     month_count = sum(1 for _, dt in entries if (dt.year, dt.month) == (now.year, now.month))
     write_cost = _env_float("X_CONTENT_CREATE_USD", 0.015)
-    write_budget = _env_float("X_WRITE_MONTHLY_BUDGET_USD", 15.0)
+    write_budget = effective_float("X_WRITE_MONTHLY_BUDGET_USD", 15.0)
     if (month_count + 1) * write_cost > write_budget:
         return PolicyDecision(False, "monthly_x_write_budget")
     return PolicyDecision(True)
 
 
 def policy_status(*, now: datetime | None = None) -> dict:
+    from common.daily_post_goal import effective_float, effective_int
     now = now or datetime.now(JST)
     dated = [(entry, _posted_at(entry)) for entry in _history()]
     dates = [dt.astimezone(JST) for _entry, dt in dated if dt is not None]
@@ -125,10 +127,10 @@ def policy_status(*, now: datetime | None = None) -> dict:
     unit_cost = _env_float("X_CONTENT_CREATE_USD", 0.015)
     return {
         "today_count": today_count,
-        "daily_limit": _env_int("DAILY_POST_LIMIT", 30),
+        "daily_limit": effective_int("DAILY_POST_LIMIT", 30),
         "hour_count": hour_count,
-        "hourly_limit": _env_int("HOURLY_POST_LIMIT", 2),
+        "hourly_limit": effective_int("HOURLY_POST_LIMIT", 2),
         "month_count": month_count,
         "estimated_x_write_usd": round(month_count * unit_cost, 4),
-        "monthly_write_budget_usd": _env_float("X_WRITE_MONTHLY_BUDGET_USD", 15.0),
+        "monthly_write_budget_usd": effective_float("X_WRITE_MONTHLY_BUDGET_USD", 15.0),
     }

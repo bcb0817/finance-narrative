@@ -596,7 +596,12 @@ def _env_int(name: str, default: int) -> int:
 
 
 # しきい値は .env で調整可能（通過率チューニング用）。既定は通過率30%前後を狙った緩め設定。
-NEWS_BOT_RELEVANCE_THRESHOLD = _env_int("NEWS_RELEVANCE_THRESHOLD", 7)
+try:
+    from common.daily_post_goal import effective_int as _goal_effective_int
+except ImportError:  # pragma: no cover
+    from daily_post_goal import effective_int as _goal_effective_int
+
+NEWS_BOT_RELEVANCE_THRESHOLD = _goal_effective_int("NEWS_RELEVANCE_THRESHOLD", 7)
 # 話題性・ナラティブ経路のしきい値
 def _post_enabled_now() -> bool:
     return os.environ.get("POST_ENABLED", "false").strip().lower() in ("true", "1", "yes")
@@ -630,15 +635,11 @@ def _roundup_posted_today() -> bool:
     return False
 
 
-NEWS_BOT_BUZZ_THRESHOLD = _env_int("NEWS_BUZZ_THRESHOLD", 7)
-NEWS_BOT_NARRATIVE_THRESHOLD = _env_int("NEWS_NARRATIVE_THRESHOLD", 7)
-NEWS_BOT_THEME_THRESHOLD = _env_int("NEWS_THEME_THRESHOLD", 6)
+NEWS_BOT_BUZZ_THRESHOLD = _goal_effective_int("NEWS_BUZZ_THRESHOLD", 7)
+NEWS_BOT_NARRATIVE_THRESHOLD = _goal_effective_int("NEWS_NARRATIVE_THRESHOLD", 7)
+NEWS_BOT_THEME_THRESHOLD = _goal_effective_int("NEWS_THEME_THRESHOLD", 6)
 # safety.py の既定(7)を .env で上書き（既定6=緩め）
-NEWS_BOT_POST_VALUE_THRESHOLD = _env_int("NEWS_POST_VALUE_THRESHOLD", 6)
-try:
-    from common.daily_post_goal import effective_int as _goal_effective_int
-except ImportError:  # pragma: no cover
-    from daily_post_goal import effective_int as _goal_effective_int
+NEWS_BOT_POST_VALUE_THRESHOLD = _goal_effective_int("NEWS_POST_VALUE_THRESHOLD", 6)
 
 NEWS_IDLE_FALLBACK_HOURS = max(
     0, _goal_effective_int("NEWS_IDLE_FALLBACK_HOURS", 3)

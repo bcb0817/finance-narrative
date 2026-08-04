@@ -117,6 +117,35 @@ risk_level は "low" / "medium" / "high" のいずれかにしてください。
         )
         if any(bool(result.get(k)) for k in danger_keys) or result.get("risk_level") == "high":
             result["ok_to_post"] = False
+        hard_rejection = (
+            any(bool(result.get(k)) for k in danger_keys)
+            or result.get("risk_level") == "high"
+        )
+        try:
+            from common.daily_post_goal import effective_int
+            retry_limit = effective_int("SAFETY_REVIEW_RETRY_LIMIT", 0)
+        except ImportError:  # pragma: no cover
+            retry_limit = 0
+        if not result.get("ok_to_post") and not hard_rejection and retry_limit > 0:
+            retry_prompt = review_prompt + """
+
+これは投稿件数目標未達時の再審査です。判定基準は一切緩和せず、
+危険フラグがない文章について、誤検知でないかを独立に再確認してください。
+"""
+            retried = service.structured(
+                retry_prompt,
+                schema,
+                role=OpenAIRole.REVIEW,
+                operation="financial_safety_review_retry",
+            )
+            retry_hard = (
+                any(bool(retried.get(k)) for k in danger_keys)
+                or retried.get("risk_level") == "high"
+            )
+            if retry_hard:
+                retried["ok_to_post"] = False
+            retried["review_retried"] = True
+            result = retried
         result.setdefault("contains_price_prediction", False)
         return result
     except (json.JSONDecodeError, ValueError) as e:

@@ -690,7 +690,9 @@ def update_daily_learning(
 
 投稿目標は1日20件です。未達の場合は、品質・事実確認・重複防止・予算・投稿上限を維持したまま、
 不足原因と翌日の投稿機会を増やす具体策をimpression_strategyへ含めてください。
-プログラムが自動変更できるのは投稿間隔と高品質フォールバック待ち時間だけです。
+プログラムは未達度に応じて、投稿間隔、投稿閾値、日次・時間上限、X書き込み予算、
+安全審査の再試行回数をハード上限内で段階調整できます。事実確認、投資助言禁止、
+重複防止、ライセンス、APIキー保護は変更できません。
 """
 
     review: dict
@@ -797,10 +799,19 @@ def update_daily_learning(
                     "NEWS_IDLE_FALLBACK_HOURS",
                     "QUIET_MIN_GAP_MINUTES",
                     "QUIET_MAX_GAP_MINUTES",
+                    "NEWS_POST_VALUE_THRESHOLD",
+                    "NEWS_RELEVANCE_THRESHOLD",
+                    "NEWS_BUZZ_THRESHOLD",
+                    "NEWS_NARRATIVE_THRESHOLD",
+                    "NEWS_THEME_THRESHOLD",
+                    "DAILY_POST_LIMIT",
+                    "HOURLY_POST_LIMIT",
+                    "X_WRITE_MONTHLY_BUDGET_USD",
+                    "SAFETY_REVIEW_RETRY_LIMIT",
                 ],
                 "arbitrary_source_editing_allowed": False,
-                "safety_gates_must_remain": True,
-                "budget_and_post_limits_must_remain": True,
+                "deterministic_safety_gates_must_remain": True,
+                "adaptive_hard_maxima_must_remain": True,
             },
         }
         strategy_payload["strategy_id"] = hashlib.sha256(

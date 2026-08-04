@@ -492,10 +492,12 @@ The production target is 20 successful X posts per JST calendar day. The daily
 review records the completed previous day, achievement rate, shortfall, current
 day pace, and any bounded program adjustment.
 
-When the target is missed, the bot may only shorten the quiet-post interval and
-the high-quality idle fallback wait within hard-coded bounds. It cannot lower
-quality thresholds, bypass fact or safety checks, change API budgets, change
-daily/hourly post limits, or edit arbitrary source code.
+When the target is missed, the bot progressively changes quiet-post intervals,
+the high-quality idle fallback wait, editorial thresholds, daily/hourly post
+limits, the X-write budget, and safety-review retry count within configured hard
+maxima. Deterministic safety checks, fact confirmation, duplicate prevention,
+investment-advice prohibitions, licensing, API-key protection, OpenAI's hard
+budget, and xAI's hard budget remain mandatory.
 
 ```powershell
 .\.venv\Scripts\python.exe local_finance_bot.py daily-goal-status
