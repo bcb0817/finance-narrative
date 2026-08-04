@@ -499,6 +499,15 @@ maxima. Deterministic safety checks, fact confirmation, duplicate prevention,
 investment-advice prohibitions, licensing, API-key protection, OpenAI's hard
 budget, and xAI's hard budget remain mandatory.
 
+Each scheduled news run scans a wider ranked RSS pool while counting only newly
+assessed stories against `NEWS_MAX_CANDIDATES`; previously assessed top stories
+therefore cannot starve lower-ranked fresh candidates. Internal market data is
+optional enrichment for an independently publishable RSS/article and cannot
+veto that article merely because an enrichment bundle is unavailable. When the
+day falls behind its linear 20-post pace, the daemon may run one additional news
+cycle, still subject to the hourly/daily limits, X-write budget, duplicate
+checks, factual review, and financial-safety review.
+
 ```powershell
 .\.venv\Scripts\python.exe local_finance_bot.py daily-goal-status
 ```

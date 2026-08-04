@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -124,6 +125,51 @@ def post_count(day: date) -> int:
     return len(ids) + anonymous
 
 
+def target_deadline_hour() -> int:
+    try:
+        return max(
+            1,
+            min(23, int(os.getenv("DAILY_GOAL_TARGET_DEADLINE_HOUR", "23") or 23)),
+        )
+    except ValueError:
+        return 23
+
+
+def expected_post_count(now: datetime | None = None) -> int:
+    """Expected cumulative posts, reaching the daily target before midnight."""
+    current = (now or datetime.now(JST)).astimezone(JST)
+    deadline_hour = target_deadline_hour()
+    elapsed_minutes = current.hour * 60 + current.minute
+    deadline_minutes = deadline_hour * 60
+    if elapsed_minutes <= 0:
+        return 0
+    return min(
+        daily_target(),
+        math.ceil(daily_target() * min(elapsed_minutes, deadline_minutes) / deadline_minutes),
+    )
+
+
+def catch_up_runs(now: datetime | None = None) -> int:
+    """Return bounded extra news runs needed to recover today's target pace."""
+    current = (now or datetime.now(JST)).astimezone(JST)
+    if os.getenv("DAILY_GOAL_CATCH_UP_ENABLED", "true").lower() not in TRUE_VALUES:
+        return 0
+    target = daily_target()
+    completed = post_count(current.date())
+    if completed >= target:
+        return 0
+    expected = expected_post_count(current)
+    deficit = max(0, expected - completed)
+    try:
+        maximum = max(
+            0,
+            min(2, int(os.getenv("DAILY_GOAL_MAX_EXTRA_NEWS_RUNS", "1") or 1)),
+        )
+    except ValueError:
+        maximum = 1
+    return min(maximum, deficit)
+
+
 def _current_values() -> dict[str, float]:
     stored = _read_json(_policy_path(), {})
     values = stored.get("effective_values", {}) if isinstance(stored, dict) else {}
@@ -226,8 +272,7 @@ def review_daily_goal(
     completed_day = current.date() - timedelta(days=1)
     completed_count = post_count(completed_day)
     today_count = post_count(current.date())
-    elapsed_ratio = (current.hour * 60 + current.minute) / (24 * 60)
-    expected_now = min(target, int(target * elapsed_ratio))
+    expected_now = expected_post_count(current)
     shortfall = max(0, target - completed_count)
     already_reviewed = completed_day.isoformat() in _reviewed_days()
     adjustment: dict[str, Any] = {"status": "not_needed"}
@@ -246,6 +291,7 @@ def review_daily_goal(
         "today_count": today_count,
         "expected_today_by_now": expected_now,
         "today_on_pace": today_count >= expected_now,
+        "target_deadline_hour_jst": target_deadline_hour(),
         "program_adjustment": adjustment,
         "quality_gates_relaxed": any(
             name.startswith("NEWS_") and name.endswith("_THRESHOLD")

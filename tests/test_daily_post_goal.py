@@ -104,6 +104,53 @@ class DailyPostGoalTests(unittest.TestCase):
             self.assertGreaterEqual(result["required_gap_minutes"], 45)
             self.assertLessEqual(result["required_gap_minutes"], 75)
 
+    def test_catch_up_requests_one_extra_run_only_when_behind(self):
+        now = datetime(2026, 8, 4, 12, 0, tzinfo=goal.JST)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            rows = [
+                {
+                    "tweet_id": str(index),
+                    "posted_at": now.replace(hour=index, minute=0).isoformat(),
+                }
+                for index in range(7)
+            ]
+            (root / "posted_history.json").write_text(
+                json.dumps(rows), encoding="utf-8"
+            )
+            env = {
+                "DAILY_POST_TARGET": "20",
+                "DAILY_GOAL_CATCH_UP_ENABLED": "true",
+                "DAILY_GOAL_MAX_EXTRA_NEWS_RUNS": "1",
+            }
+            with patch.object(goal, "state_dir", return_value=root), patch.dict(
+                os.environ, env
+            ):
+                self.assertEqual(goal.catch_up_runs(now), 1)
+                rows.extend(
+                    {
+                        "tweet_id": str(index),
+                        "posted_at": now.replace(hour=index, minute=0).isoformat(),
+                    }
+                    for index in range(7, 11)
+                )
+                (root / "posted_history.json").write_text(
+                    json.dumps(rows), encoding="utf-8"
+                )
+                self.assertEqual(goal.catch_up_runs(now), 0)
+
+    def test_target_pace_reaches_twenty_by_23_jst(self):
+        with patch.dict(os.environ, {
+            "DAILY_POST_TARGET": "20",
+            "DAILY_GOAL_TARGET_DEADLINE_HOUR": "23",
+        }):
+            self.assertEqual(
+                goal.expected_post_count(
+                    datetime(2026, 8, 4, 23, 0, tzinfo=goal.JST)
+                ),
+                20,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

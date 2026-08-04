@@ -1303,6 +1303,31 @@ def cmd_daemon() -> None:
                     continue
                 _write_heartbeat(status="running", next_bot=due_bot, next_run=nxt)
                 run_bot(due_bot, sched=sched)
+                if due_bot == "news":
+                    try:
+                        from common.daily_post_goal import catch_up_runs
+                        from common.posting_policy import policy_status
+                        extra_runs = catch_up_runs()
+                        for extra_index in range(extra_runs):
+                            limits = policy_status()
+                            if (
+                                limits["today_count"] >= limits["daily_limit"]
+                                or limits["hour_count"] >= limits["hourly_limit"]
+                                or limits["estimated_x_write_usd"]
+                                >= limits["monthly_write_budget_usd"]
+                            ):
+                                print("[daemon] news catch-up: 投稿上限または予算のため停止")
+                                break
+                            print(
+                                "[daemon] news catch-up: 目標ペース未達のため追加実行 "
+                                f"{extra_index + 1}/{extra_runs}"
+                            )
+                            run_bot("news", sched=sched)
+                    except Exception as exc:
+                        print(
+                            "[WARN] news catch-up skipped after "
+                            f"{type(exc).__name__}"
+                        )
     finally:
         try:
             _write_heartbeat(status="stopped")

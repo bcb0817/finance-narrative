@@ -595,6 +595,19 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def candidate_scan_limits() -> tuple[int, int]:
+    """Return new-candidate assessment and ranked-pool scan limits."""
+    assess_limit = max(1, min(25, _env_int("NEWS_MAX_CANDIDATES", 15)))
+    configured_pool = max(1, _env_int("NEWS_CANDIDATE_POOL_SIZE", 75))
+    scan_limit = max(assess_limit, min(150, configured_pool))
+    return assess_limit, scan_limit
+
+
+def failed_market_enrichment_is_veto(provider_isolated_editorial: bool) -> bool:
+    """Only non-isolated publication sources require market evidence to pass."""
+    return not bool(provider_isolated_editorial)
+
+
 # しきい値は .env で調整可能（通過率チューニング用）。既定は通過率30%前後を狙った緩め設定。
 try:
     from common.daily_post_goal import effective_int as _goal_effective_int
@@ -811,12 +824,12 @@ def main(mode: str = "image") -> None:
     from news import fetch_news_candidates
     from posted_history import recently_evaluated, record_evaluated
 
-    try:
-        max_candidates = max(1, min(15, int(os.getenv("NEWS_MAX_CANDIDATES", "5"))))
-    except ValueError:
-        max_candidates = 5
+    max_candidates, candidate_pool_size = candidate_scan_limits()
 
-    candidates = fetch_news_candidates(posted_urls=posted_urls, limit=max_candidates)
+    candidates = fetch_news_candidates(
+        posted_urls=posted_urls,
+        limit=candidate_pool_size,
+    )
     if not candidates:
         logger.error("ニュース取得失敗")
         _news_log(selected_post_type=mode, skip_reason="no_news", should_post=False)
@@ -827,6 +840,7 @@ def main(mode: str = "image") -> None:
     pv = rel = buzz = narr = theme = 0
     scope = "-"
     checked_count = 0
+    assessed_count = 0
     fallback = None
 
     try:
@@ -859,6 +873,14 @@ def main(mode: str = "image") -> None:
                 dry_run=DRY_RUN, actual_post_attempted=False,
             )
             continue
+
+        if assessed_count >= max_candidates:
+            logger.info(
+                "新規候補の評価上限に到達: assessed=%s scanned=%s pool=%s",
+                assessed_count, checked_count, len(candidates),
+            )
+            break
+        assessed_count += 1
 
         cand_impact = assess_market_impact(cand)
         cand_pv = cand_impact.get("post_value", 0)
@@ -976,9 +998,7 @@ def main(mode: str = "image") -> None:
         cand_impact["independent_confirmation_decision"] = independent_decision
         cand_impact["public_evidence_bundle"] = public_bundle
         if independent_match and not evidence_allowed:
-            cand_should = False
-            cand_impact["should_post"] = False
-            cand_impact["skip_reason"] = (
+            evidence_reason = (
                 "market_trigger_evidence_blocked:"
                 + str(
                     (public_bundle or {}).get("validation", {}).get("reason")
@@ -986,6 +1006,18 @@ def main(mode: str = "image") -> None:
                     or "causal_confidence_insufficient"
                 )
             )
+            cand_impact["independent_confirmation_suppressed"] = True
+            cand_impact["independent_confirmation_suppression_reason"] = evidence_reason
+            # Internal market data is optional enrichment for an independently
+            # publishable RSS/article source.  Failed enrichment must not veto
+            # that source's editorial assessment.  Non-isolated sources remain
+            # fail-closed and still require a valid public evidence bundle.
+            if failed_market_enrichment_is_veto(
+                cand_impact["provider_isolated_editorial"]
+            ):
+                cand_should = False
+                cand_impact["should_post"] = False
+                cand_impact["skip_reason"] = evidence_reason
         if cand_impact["independent_confirmation"]:
             cand_impact.update({
                 "internal_market_trigger_id": independent_match.get("trigger_id"),
@@ -1199,7 +1231,10 @@ def main(mode: str = "image") -> None:
         if fallback_ok:
             item, impact = fallback_item, fallback_impact
         else:
-            logger.info("3時間フォールバック最低条件未達のため正常スキップ")
+            logger.info(
+                "%s時間フォールバック最低条件未達のため正常スキップ",
+                NEWS_IDLE_FALLBACK_HOURS,
+            )
     if item is not None and impact is not None and not impact.get("should_post",False):
         impact = {**impact, "should_post": True, "skip_reason": "",
                   "pass_path": "idle_fallback"}
@@ -1220,7 +1255,8 @@ def main(mode: str = "image") -> None:
 
     if item is None or impact is None:
         logger.info(
-            f"候補{checked_count}件を確認したが、投稿基準を通るニュースなし"
+            f"候補{checked_count}件を走査・新規{assessed_count}件を評価したが、"
+            "投稿基準を通るニュースなし"
         )
         return
 
