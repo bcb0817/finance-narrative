@@ -18,15 +18,16 @@ class OpenAIRole(str, Enum):
 
 
 ALLOWED_MODELS = frozenset({
+    "gpt-6-astra",
     "gpt-5.4-mini", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5-nano",
     "omni-moderation-latest", "text-embedding-3-small", "gpt-image-2", "gpt-5-mini",
 })
 ROLE_ENV_DEFAULTS = {
-    OpenAIRole.GENERATE: ("OPENAI_GENERATE_MODEL", "gpt-5.4-mini"),
+    OpenAIRole.GENERATE: ("OPENAI_GENERATE_MODEL", "gpt-6-astra"),
     OpenAIRole.REVIEW: ("OPENAI_REVIEW_MODEL", "gpt-5-nano"),
     OpenAIRole.CLASSIFY: ("OPENAI_CLASSIFICATION_MODEL", "gpt-5-nano"),
-    OpenAIRole.ANALYZE: ("OPENAI_ANALYSIS_MODEL", "gpt-5.6-terra"),
-    OpenAIRole.DEEP_ANALYZE: ("OPENAI_DEEP_ANALYSIS_MODEL", "gpt-5.6-sol"),
+    OpenAIRole.ANALYZE: ("OPENAI_ANALYSIS_MODEL", "gpt-6-astra"),
+    OpenAIRole.DEEP_ANALYZE: ("OPENAI_DEEP_ANALYSIS_MODEL", "gpt-6-astra"),
     OpenAIRole.EMBED: ("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
     OpenAIRole.MODERATE: ("OPENAI_MODERATION_MODEL", "omni-moderation-latest"),
     OpenAIRole.IMAGE: ("OPENAI_IMAGE_MODEL", "gpt-image-2"),

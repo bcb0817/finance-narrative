@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover
 
 
 MODEL_PRICES = {
+    "gpt-6-astra": (10.0, 50.0),
     "gpt-5-mini": (0.25, 2.00),
     "gpt-5-nano": (0.05, 0.40),
 }
@@ -52,6 +53,9 @@ def record_openai_usage(response, model: str) -> None:
     input_tokens = int(getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", 0) or 0)
     input_price, output_price = MODEL_PRICES.get(model, (1.0, 5.0))
+    if model == "gpt-6-astra" and input_tokens > 272000:
+        input_price *= 2
+        output_price *= 1.5
     estimated = input_tokens / 1_000_000 * input_price + output_tokens / 1_000_000 * output_price
     record = {
         "ts": datetime.now(JST).isoformat(),
