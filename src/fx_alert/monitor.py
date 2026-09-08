@@ -171,16 +171,6 @@ def evaluate(
     movement.cause_confidence = context.confidence
     movement.cause_summary = context.summary
     movement.context_sources = context.sources
-    gate = check_alert_gate(movement)
-    if not gate.allowed:
-        append_jsonl("alerts.jsonl", {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "movement_id": movement.movement_id,
-            "status": "gate_blocked",
-            "reason": gate.reason,
-        })
-        return {"status": "gate_blocked", "reason": gate.reason, "movement": movement.to_dict()}
-    image_path, metadata_path = create_chart(bars, movement)
     append_jsonl("movements.jsonl", movement.to_dict())
     if not dry_run:
         try:
@@ -210,6 +200,17 @@ def evaluate(
                 "bot": "fx-alert", "stage": "xai_event_queue",
                 "error_type": type(exc).__name__,
             })
+    # Research must continue even when direct delivery is rate limited.
+    gate = check_alert_gate(movement)
+    if not gate.allowed:
+        append_jsonl("alerts.jsonl", {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "movement_id": movement.movement_id,
+            "status": "gate_blocked",
+            "reason": gate.reason,
+        })
+        return {"status": "gate_blocked", "reason": gate.reason, "movement": movement.to_dict()}
+    image_path, metadata_path = create_chart(bars, movement)
     text = build_post(movement)
     if send_preview:
         notify_preview(movement, text)

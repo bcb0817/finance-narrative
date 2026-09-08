@@ -28,7 +28,10 @@ def _parse(value: str | None) -> datetime | None:
 def check_alert_gate(movement: FxMovement, *, now: datetime | None = None) -> GateDecision:
     current = now or datetime.now(timezone.utc)
     state = load_state()
-    alerts = [row for row in state.get("alerts", []) if isinstance(row, dict)]
+    # Failed attempts are diagnostics, not delivered alerts. In particular a
+    # license rejection must never exhaust the delivery quota for the day.
+    alerts = [row for row in state.get("alerts", [])
+              if isinstance(row, dict) and row.get("status") == "posted"]
     if any(row.get("movement_id") == movement.movement_id for row in alerts):
         return GateDecision(False, "duplicate_movement")
     recent = []

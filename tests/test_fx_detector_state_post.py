@@ -124,6 +124,26 @@ class FxDetectorStatePostTests(unittest.TestCase):
             remember_alert(movement("two", when=now - timedelta(hours=2)), status="posted")
             self.assertEqual(check_alert_gate(movement("three", when=now), now=now).reason, "daily_limit")
 
+    def test_failed_attempts_do_not_consume_delivery_limits(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"STATE_DIR": temp}):
+            for index in range(10):
+                remember_alert(movement(str(index)), status="license_blocked")
+            self.assertTrue(check_alert_gate(movement("0")).allowed)
+            self.assertTrue(check_alert_gate(movement("new")).allowed)
+
+    def test_delivery_limit_does_not_block_research(self):
+        from fx_alert.monitor import evaluate
+        from fx_alert.state import GateDecision
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"STATE_DIR": temp}), \
+                patch("fx_alert.monitor.check_alert_gate", return_value=GateDecision(False, "daily_limit")), \
+                patch("market_data.editorial_bridge.enqueue_internal_trigger") as queue, \
+                patch("common.xai_social_intelligence.enqueue_fx_movement"), \
+                patch("fx_alert.monitor.create_chart") as chart:
+            result = evaluate(movement_fixture(), dry_run=False)
+            self.assertEqual(result["reason"], "daily_limit")
+            queue.assert_called_once()
+            chart.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
