@@ -54,3 +54,21 @@ def test_api_failure_falls_back_to_text():
         completions=SimpleNamespace(create=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("down")))
     ))
     assert assess_diagram_value(ITEM, client, "test-model")["should_diagram"] is False
+
+
+def test_grounded_explanation_without_numbers_prefers_image():
+    result = assess_diagram_value(ITEM, FakeClient({
+        "score": 7, "has_clear_structure": True,
+        "structure_type": "causal", "fact_count": 3,
+        "numeric_fact_count": 0,
+    }), "test-model")
+    assert result["should_diagram"] is True
+
+
+def test_image_preference_does_not_allow_insufficient_facts():
+    result = assess_diagram_value(ITEM, FakeClient({
+        "score": 7, "has_clear_structure": True,
+        "structure_type": "causal", "fact_count": 2,
+        "numeric_fact_count": 0,
+    }), "test-model")
+    assert result["should_diagram"] is False
