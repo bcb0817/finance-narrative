@@ -37,6 +37,13 @@ def build_post(movement: FxMovement, *, style: str = "fx_breaking") -> str:
     else:
         lead = f"【為替速報】{movement.direction_ja}が進行。"
     cause = movement.cause_summary or "現時点で明確な材料は確認できていません"
+    if style == "fx_breaking":
+        return (
+            f"【為替速報】{movement.direction_ja}が進行。\n"
+            f"{pair}は{movement.end_price:.3f}円、{movement.window}で"
+            f"{sign}{movement.change_yen:.2f}円（{sign}{movement.change_pct:.2f}%）。\n"
+            f"{cause.rstrip('。')}。"
+        )
     ending = "短時間の値動きが続く可能性があるため、流動性と次の公表情報を確認します。"
     text = f"{lead}\n{move}\n{cause}。{ending}"
     if len(text) > 280:
