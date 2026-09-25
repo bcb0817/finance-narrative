@@ -63,6 +63,10 @@ def status() -> dict:
 
 def publish(*, session=requests, dry_run: bool = False, now: datetime | None = None) -> dict:
     current = (now or datetime.now(JST)).astimezone(JST)
+    if not dry_run:
+        # Local operational monitoring must run even without an external URL.
+        from common.budget_watchdog import check
+        check(now=current, session=session)
     url = os.getenv("EXTERNAL_HEARTBEAT_URL", "").strip()
     payload = {
         "service": "finance-narrative",
