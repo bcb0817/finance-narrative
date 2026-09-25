@@ -23,7 +23,7 @@ ALLOWED_MODELS = frozenset({
     "omni-moderation-latest", "text-embedding-3-small", "gpt-image-2", "gpt-5-mini",
 })
 ROLE_ENV_DEFAULTS = {
-    OpenAIRole.GENERATE: ("OPENAI_GENERATE_MODEL", "gpt-6-astra"),
+    OpenAIRole.GENERATE: ("OPENAI_GENERATE_MODEL", "gpt-5-mini"),
     OpenAIRole.REVIEW: ("OPENAI_REVIEW_MODEL", "gpt-5-nano"),
     OpenAIRole.CLASSIFY: ("OPENAI_CLASSIFICATION_MODEL", "gpt-5-nano"),
     OpenAIRole.ANALYZE: ("OPENAI_ANALYSIS_MODEL", "gpt-6-astra"),
@@ -42,7 +42,11 @@ def env_bool(name: str, default: bool) -> bool:
 
 def model_for(role: OpenAIRole) -> str:
     env_name, default = ROLE_ENV_DEFAULTS[role]
-    return os.getenv(env_name, default).strip() or default
+    model = os.getenv(env_name, default).strip() or default
+    # User policy: Astra must never generate posts, including fallback calls.
+    if role in (OpenAIRole.GENERATE, OpenAIRole.FALLBACK) and "astra" in model.lower():
+        return "gpt-5-mini"
+    return model
 
 
 def validate_models() -> list[str]:
