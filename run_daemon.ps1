@@ -25,5 +25,7 @@ if (Test-Python $venvPython) {
 }
 
 Write-Host "Starting finance bot with: $python"
-& $python 'local_finance_bot.py' daemon
+$managedLog = Join-Path $PSScriptRoot 'logs\daemon_managed.log'
+New-Item -ItemType Directory -Path (Split-Path $managedLog) -Force | Out-Null
+& $python -u 'local_finance_bot.py' daemon *>> $managedLog
 exit $LASTEXITCODE
