@@ -33,6 +33,8 @@ class FakeClient:
         self.responses=responses or FakeResponses(); self.embeddings=embeddings or FakeEmbeddings(); self.moderations=moderations or FakeModerations()
 
 
+# Explicit rollback coverage; editorial-v2 expectations live in test_editorial_policy.
+@patch.dict(os.environ, {'EDITORIAL_POLICY_ENABLED': 'false'})
 class OpenAIServiceTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.env=patch.dict(os.environ,{"STATE_DIR":self.tmp.name,"OPENAI_API_KEY":"test-secret","OPENAI_GENERATE_MODEL":"gpt-5.4-mini","OPENAI_REVIEW_MODEL":"gpt-5-nano","OPENAI_CLASSIFICATION_MODEL":"gpt-5-nano","OPENAI_ANALYSIS_MODEL":"gpt-5.6-terra","OPENAI_DEEP_ANALYSIS_MODEL":"gpt-5.6-sol","OPENAI_EMBEDDING_MODEL":"text-embedding-3-small","OPENAI_MODERATION_MODEL":"omni-moderation-latest","OPENAI_IMAGE_MODEL":"gpt-image-2","OPENAI_FALLBACK_MODEL":"gpt-5-mini","OPENAI_EMBEDDING_ENABLED":"true","OPENAI_MODERATION_ENABLED":"true","OPENAI_DEEP_ANALYSIS_ENABLED":"false","OPENAI_IMAGE_ENABLED":"false"},clear=False); self.env.start()

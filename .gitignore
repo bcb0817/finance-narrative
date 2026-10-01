@@ -241,3 +241,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local production-history snapshot and offline review outputs, never deployed.
+/review_data/

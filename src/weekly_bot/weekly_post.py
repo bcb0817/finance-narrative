@@ -221,6 +221,16 @@ def generate_weekly_image(raw_events: list[dict], out_path: str = OUT_PATH) -> s
 
 # ========== 画像＋キャプションでX投稿 ==========
 def post_weekly_events(raw_events: list[dict], out_path: str = OUT_PATH):
+    from common.editorial_policy import enabled
+    if enabled():
+        from common.editorial import publish_candidates
+        items = [{'title': e.get('title', ''), 'excerpt': e.get('evidence_excerpt', ''),
+                  'source': e.get('source_name', ''), 'url': e.get('source_url', ''),
+                  'published': e.get('date_jst', '') or e.get('date', ''),
+                    'target_period': e.get('date_jst', '') or e.get('date', ''),
+                    'retrieved_at': e.get('retrieved_at', ''),
+                    'public_allowed': e.get('verified') is True and bool(e.get('evidence_excerpt'))} for e in raw_events]
+        return publish_candidates(items, bot='weekly', dry_run=not os.getenv('POST_ENABLED', '').lower() in ('true', '1', 'yes'))
     from post import review_tweet_with_openai, post_tweet_with_image, NG_WORDS
 
     schedule = build_weekly_schedule(raw_events)

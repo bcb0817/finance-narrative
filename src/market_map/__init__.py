@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["generate_market_map_post", "post_to_x"]
 
 
-def generate_market_map_post(out_path: str = "market_map.png", session: str = "open") -> dict:
+def generate_market_map_post(out_path: str = "market_map.png", session: str = "open", *, render: bool = True) -> dict:
     """寄り付きヒートマップ投稿の素材を生成する。
 
     Returns:
@@ -92,7 +92,8 @@ def generate_market_map_post(out_path: str = "market_map.png", session: str = "o
 
     image_path: str | None = None
     try:
-        image_path = build_treemap(df, headline, out_path=out_path)
+        if render:
+            image_path = build_treemap(df, headline, out_path=out_path)
     except Exception as e:  # noqa: BLE001
         # 仕様11: 画像生成失敗でも落とさず、テキストのみで返す
         logger.warning("treemap 生成に失敗、画像なしで返却: %s", e)
@@ -107,7 +108,8 @@ def generate_market_map_post(out_path: str = "market_map.png", session: str = "o
             "max_sector_pct_name": max_sector_pct_name,
             "intraday_reversal_pct": intraday_reversal_pct,
             "index_current_pct": current_pct,
-            "session": session}
+            "session": session,
+            "editorial_sources": df.attrs.get("editorial_sources", [])}
 
 
 if __name__ == "__main__":

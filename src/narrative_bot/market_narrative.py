@@ -43,7 +43,8 @@ def _gather_news(limit: int = 15) -> list[dict]:
     items = deduplicate(items)[:limit]
     return [{
         "title": i.title, "source": i.source, "group": i.source_group,
-        "published_at": i.published,
+        "published_at": i.published, "url": i.url,
+        "excerpt": i.excerpt, "retrieved_at": i.retrieved_at,
     } for i in items]
 
 

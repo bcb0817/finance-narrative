@@ -52,6 +52,8 @@ def _review():
     }
 
 
+# Explicit rollback coverage; editorial-v2 expectations live in test_editorial_policy.
+@patch.dict(os.environ, {'EDITORIAL_POLICY_ENABLED': 'false'})
 class ImpressionStrategyTests(unittest.TestCase):
     def test_discord_webhook_is_redacted(self):
         secret = "https://discord.com/api/webhooks/123456/secret-token"

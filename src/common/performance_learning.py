@@ -599,6 +599,10 @@ def update_daily_learning(
     top_n: int = 3,
 ) -> dict:
     """直近lookback_hoursのインプレ上位top_nをAIレビューして保存する。"""
+    from common.editorial_policy import enabled as editorial_enabled
+    if editorial_enabled():
+        from common.editorial_metrics import daily_review
+        return daily_review()
     if not _enabled():
         return {"status": "disabled", "message": "日次学習は無効です"}
 
@@ -992,6 +996,10 @@ def load_learning_context(max_chars: int | None = None) -> str:
 
 def with_performance_learning(prompt: str) -> str:
     """生成タスクだけに学習メモを付与する。審査・ゲート判定には使わない。"""
+    from common.editorial_policy import enabled, RULES
+    if enabled():
+        # Short-term impression recommendations must not alter editorial policy.
+        return RULES + '\n' + prompt
     context = load_learning_context()
     if not context:
         return prompt

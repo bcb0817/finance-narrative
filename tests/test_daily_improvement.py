@@ -9,6 +9,8 @@ from unittest.mock import patch
 from common import daily_improvement as improvement
 
 
+# Explicit rollback coverage; editorial-v2 expectations live in test_editorial_policy.
+@patch.dict(os.environ, {'EDITORIAL_POLICY_ENABLED': 'false'})
 class DailyImprovementTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

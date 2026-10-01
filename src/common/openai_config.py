@@ -41,6 +41,12 @@ def env_bool(name: str, default: bool) -> bool:
 
 
 def model_for(role: OpenAIRole) -> str:
+    from common.editorial_policy import enabled
+    if enabled():
+        if role in (OpenAIRole.GENERATE, OpenAIRole.FALLBACK):
+            return "gpt-5-mini"
+        if role in (OpenAIRole.REVIEW, OpenAIRole.CLASSIFY):
+            return "gpt-5-nano"
     env_name, default = ROLE_ENV_DEFAULTS[role]
     model = os.getenv(env_name, default).strip() or default
     # User policy: Astra must never generate posts, including fallback calls.

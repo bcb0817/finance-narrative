@@ -100,7 +100,8 @@ def main():
         out = "outputs/market_map/market_map.png"
 
     dry_run = not _post_enabled()
-    post = generate_market_map_post(out_path=out, session=session)
+    from common.editorial_policy import enabled as editorial_enabled
+    post = generate_market_map_post(out_path=out, session=session, render=not editorial_enabled())
     move = post.get("total_change")
     cap_change = post.get("total_change")  # S&P500時価総額の増減（USD）
     total_pct = post.get("total_pct", 0.0)
@@ -134,7 +135,7 @@ def main():
         min_breadth=min_breadth,
         min_sector_pct=min_sector_pct,
         min_reversal_pct=min_reversal_pct,
-        force=_force(),
+        force=_force() and not editorial_enabled(),
     )
     gate_abs = gate["abs"]
     gate_pct = gate["pct"]
@@ -186,6 +187,15 @@ def main():
             })
         except Exception as exc:
             print(f"[WARN] xAI market-map event queue skipped: {type(exc).__name__}")
+
+    if editorial_enabled():
+        from common.editorial import publish_candidates, audit
+        candidates = post.get('editorial_sources', [])
+        if not candidates:
+            audit(bot='market-map', decision='skip', reason='public_evidence_metadata_missing')
+            return
+        publish_candidates(candidates, bot='market-map', dry_run=dry_run)
+        return
 
     should_post = True
     tweet_id = ""

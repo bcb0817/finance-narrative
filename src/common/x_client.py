@@ -56,6 +56,10 @@ def get_tweepy_api_v1() -> tweepy.API:
 
 
 def _approved(text: str) -> bool:
+    from common.editorial import budget_ok
+    if not budget_ok():
+        logger.warning('X post blocked by OpenAI budget stop')
+        return False
     decision = check_post(text)
     if not decision.allowed:
         logger.warning("X post blocked by policy: %s", decision.reason)
@@ -63,6 +67,10 @@ def _approved(text: str) -> bool:
 
 
 def post_tweet(text: str) -> str:
+    from common.editorial_policy import enabled
+    if enabled():
+        from common.editorial_delivery import publish
+        return publish(text)
     if not post_enabled():
         logger.info("POST_ENABLED=false -> X posting skipped")
         return ""
@@ -80,6 +88,10 @@ def post_tweet(text: str) -> str:
 
 
 def post_tweet_with_image(text: str, image_path: str) -> str:
+    from common.editorial_policy import enabled
+    if enabled():
+        from common.editorial_delivery import publish
+        return publish(text, image_path)
     if not post_enabled():
         logger.info("POST_ENABLED=false -> X image posting skipped")
         return ""
@@ -104,6 +116,11 @@ def post_tweet_thread_with_image(
     reply_texts: list[str],
 ) -> list[str]:
     """Post an image parent; replies are disabled by default to protect budget."""
+    from common.editorial_policy import enabled
+    if enabled():
+        # Replies require independent editorial evidence; never bypass caps.
+        tid = post_tweet_with_image(first_text, image_path)
+        return [tid] if tid else []
     try:
         from safety import safety_check
     except ImportError:  # pragma: no cover

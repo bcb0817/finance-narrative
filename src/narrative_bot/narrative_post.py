@@ -77,6 +77,10 @@ def run_narrative(post: bool = False, out_path: str = OUT_PATH):
         return None
 
     signals = gather_signals()
+    from common.editorial_policy import enabled as editorial_enabled
+    if editorial_enabled():
+        from common.editorial import publish_candidates
+        return publish_candidates(signals.get('news', []), bot='narrative', dry_run=not post)
     if not any(signals.values()):
         logger.warning("シグナルが空。分析を中止します。")
         return None

@@ -56,6 +56,13 @@ def post_to_x(caption: str, image_path: str | None = None) -> str:
     image_path が None の場合はテキストのみ投稿する。
     POST_ENABLED=false の場合は投稿直前で止め、空文字を返す（履歴保存もしない前提）。
     """
+    from common.editorial_policy import enabled
+    if enabled():
+        from common.editorial_delivery import publish
+        return publish(caption, image_path)
+    from common.editorial import budget_ok
+    if not budget_ok():
+        return ''
     if not _post_enabled():
         logger.info("[INFO] POST_ENABLED=false -> X posting skipped")
         logger.info("（未投稿のキャプション）: %s / image=%s", caption, image_path)

@@ -4,6 +4,7 @@ import json
 import difflib
 import logging
 import random
+import html
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -240,6 +241,8 @@ class NewsItem:
     source_group: str = "market_news"
     priority: int = 3
     category: str = ""   # 後方互換（source_group と同じ値が入る）
+    excerpt: str = ""
+    retrieved_at: str = ""
 
     def __post_init__(self):
         # 旧コードの category 互換: 未指定なら source_group を入れる
@@ -255,6 +258,8 @@ class NewsItem:
             "source_group": self.source_group,
             "category": self.category,   # 後方互換
             "priority": self.priority,
+            "excerpt": self.excerpt,
+            "retrieved_at": self.retrieved_at,
         }
 
 
@@ -441,6 +446,8 @@ def fetch_feed(name: str, cfg: dict) -> list[NewsItem]:
                 published=published,
                 source_group=group,
                 priority=priority,
+                excerpt=feed_excerpt(entry.get('summary', '') or entry.get('description', '')),
+                retrieved_at=datetime.now(timezone.utc).isoformat(),
             ))
 
         logger.info(f"{name} [{group}]: {len(items)}件取得")
@@ -481,6 +488,12 @@ def fetch_feed(name: str, cfg: dict) -> list[NewsItem]:
                 pass
 
     return items
+
+
+def feed_excerpt(value: str) -> str:
+    """Keep bounded RSS evidence, not invented article text or active HTML."""
+    value = re.sub(r'<(script|style)\b[^>]*>.*?</\1>', '', str(value), flags=re.I | re.S)
+    return re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]*>', ' ', value))).strip()[:2000]
 
 
 def _normalize_title(title: str) -> str:
@@ -671,6 +684,7 @@ def fetch_news_candidates(
                     source=str(row.get("source") or "Top100 Earnings Queue"),
                     published=str(row.get("published") or ""),
                     source_group="company_earnings", priority=20,
+                    excerpt=str(row.get('excerpt') or ''), retrieved_at=str(row.get('retrieved_at') or ''),
                 ))
     except Exception as exc:
         logger.error("top100 earnings queue unavailable: %s", type(exc).__name__)
@@ -679,10 +693,17 @@ def fetch_news_candidates(
 
     # スコア降順に並べてから重複排除（似タイトルは高スコア側を残す）
     all_items.sort(key=score_item, reverse=True)
-    unique_items = deduplicate_earnings_events(deduplicate(all_items))
+    from common.editorial_policy import enabled as editorial_enabled
+    if editorial_enabled():
+        # A changed article at the same URL may contain an important update.
+        # Similar company names alone are not evidence of duplicate facts.
+        unique_items = list({(it.url, it.title): it for it in reversed(all_items)}.values())
+        unique_items.sort(key=score_item, reverse=True)
+    else:
+        unique_items = deduplicate_earnings_events(deduplicate(all_items))
     logger.info(f"重複除去後（URL+類似タイトル）: {len(unique_items)}件")
 
-    available = [it for it in unique_items if it.url not in (posted_urls or set())]
+    available = [it for it in unique_items if editorial_enabled() or it.url not in (posted_urls or set())]
     excluded = len(unique_items) - len(available)
     if excluded:
         logger.info(f"投稿済み {excluded} 件を除外しました")
@@ -706,7 +727,7 @@ def fetch_news_candidates(
         ]
 
     recent = [it for it in available if is_recent(it, hours=24)]
-    if not recent:
+    if not recent and not editorial_enabled():
         logger.warning("24時間以内の未投稿ニュースなし。全未投稿件から選択します")
         recent = available
 
