@@ -33,6 +33,11 @@
     "type": "daily_jst",
     "time": "22:00"
   },
+  "daily-improvement": {
+    "enabled": true,
+    "type": "daily_jst",
+    "time": "22:10"
+  },
   "metrics": {
     "enabled": true,
     "type": "interval_minutes",
@@ -52,5 +57,10 @@
     "enabled": true,
     "type": "interval_minutes",
     "every_minutes": 15
+  },
+  "blog-social": {
+    "enabled": false,
+    "type": "interval_minutes",
+    "every_minutes": 2
   }
 }

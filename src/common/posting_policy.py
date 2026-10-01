@@ -48,10 +48,27 @@ def _env_float(name: str, default: float) -> float:
 def _history() -> list[dict]:
     path = state_dir() / "posted_history.json"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
         return data if isinstance(data, list) else []
     except (OSError, json.JSONDecodeError):
-        return []
+        # Preserve posting limits when one historical record is malformed.
+        # Entries are written one-per-indented object, so valid neighbors can
+        # be recovered without treating the entire history as empty.
+        recovered: list[dict] = []
+        try:
+            body = raw.strip()[1:-1]
+            for chunk in re.split(r"\},\s*\n\s{2}\{", body):
+                candidate = "{" + chunk.strip().strip(",").strip("{}").strip() + "}"
+                try:
+                    entry = json.loads(candidate)
+                    if isinstance(entry, dict):
+                        recovered.append(entry)
+                except json.JSONDecodeError:
+                    continue
+        except (NameError, OSError):
+            pass
+        return recovered
 
 
 def _posted_at(entry: dict) -> datetime | None:

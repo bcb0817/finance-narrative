@@ -37,7 +37,7 @@ from post_style import choose_style, enforce_hashtag_limit, generation_rules
 from dynamic_posting import posting_window
 
 # --- news_bot 内のモジュール ---
-from news import fetch_news, NewsItem
+from news import fetch_news, NewsItem, is_market_critical_earnings
 from posted_history import add_posted_entry, get_posted_urls
 from diagram_post import assess_diagram_value, generate_diagram_image
 
@@ -555,9 +555,15 @@ def handle_image_post(item: NewsItem, impact: dict | None = None) -> None:
              safety_check_result=safety_result, shortened=shortened)
         return
 
-    # #7 240字超（X重み付き）はスレッド投稿。News Botは短文優先だが、超えた場合の保険。
+    # スレッドは明示的に有効化した場合のみ使用する。既定では長文も投稿しない。
     from safety import build_x_thread_text, weighted_len as _wl
-    use_thread = _wl(caption) > 240
+    thread_posting_enabled = os.environ.get("THREAD_AUTO_POST_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+    requires_thread = _wl(caption) > 240
+    if requires_thread and not thread_posting_enabled:
+        _log(skip_reason="thread_disabled_overlength", safety_check_result=safety_result,
+             shortened=shortened)
+        return
+    use_thread = requires_thread
     if use_thread:
         from x_client import post_tweet_thread_with_image
         parent_text, reply_texts = build_x_thread_text(caption)
@@ -574,9 +580,9 @@ def handle_image_post(item: NewsItem, impact: dict | None = None) -> None:
         logger.info("[NEWS-THREAD] use_thread=false | parent_tweet_id=%s | "
                     "final_caption_length=%s", tweet_id or "-", len(caption))
     add_posted_entry(item, tweet_id=tweet_id, mode="image", impact=impact, text=caption)
-    _log(skip_reason=("-" if tweet_id else "dry_run_not_posted"),
+    _log(skip_reason=_post_result_skip_reason(tweet_id),
          safety_check_result=safety_result, shortened=shortened, tweet_id=tweet_id,
-         dry_run=DRY_RUN, actual_post_attempted=_post_enabled_now())
+         dry_run=DRY_RUN, actual_post_attempted=_actual_post_attempted())
 
 
 # 通常ニュースBotは「高投稿価値だけ」方針。post_value>=7 かつ 米国株関連度>=8 のみ投稿。
@@ -612,6 +618,16 @@ def failed_market_enrichment_is_veto(provider_isolated_editorial: bool) -> bool:
     return not bool(provider_isolated_editorial)
 
 
+def record_evaluation_before_publication(item: NewsItem) -> bool:
+    """Critical official earnings stay retryable until posting succeeds."""
+    return not is_market_critical_earnings(item)
+
+
+def dynamic_timing_blocks(item: NewsItem, window: dict) -> bool:
+    """Breaking official earnings bypass only the soft gap, never hard limits."""
+    return not bool(window.get("allow")) and not is_market_critical_earnings(item)
+
+
 # しきい値は .env で調整可能（通過率チューニング用）。既定は通過率30%前後を狙った緩め設定。
 try:
     from common.daily_post_goal import effective_int as _goal_effective_int
@@ -622,6 +638,18 @@ NEWS_BOT_RELEVANCE_THRESHOLD = _goal_effective_int("NEWS_RELEVANCE_THRESHOLD", 7
 # 話題性・ナラティブ経路のしきい値
 def _post_enabled_now() -> bool:
     return os.environ.get("POST_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+
+
+def _actual_post_attempted() -> bool:
+    """True only when this invocation can issue an X write, not just when enabled."""
+    return _post_enabled_now() and not DRY_RUN
+
+
+def _post_result_skip_reason(tweet_id: str | None) -> str:
+    """Classify a missing post ID without masking a live-post failure as dry-run."""
+    if tweet_id:
+        return "-"
+    return "dry_run_not_posted" if DRY_RUN else "post_failed_no_tweet_id"
 
 
 # 起動時に main() で更新（dry_run = not POST_ENABLED）
@@ -775,6 +803,20 @@ EIAで投稿可は「原油/ガソリン/天然ガス在庫・WTI/Brent需給・
         data["has_independent_angle"] = bool(data.get("has_independent_angle", False))
         data["primary_source_importance"] = _i("primary_source_importance")
 
+        critical_earnings = is_market_critical_earnings(item)
+        if critical_earnings:
+            # Issuer-originated NVIDIA results are deterministically material.
+            # AI can add nuance, but cannot downgrade the event out of review.
+            pv = max(pv, 10)
+            rel = max(rel, 10)
+            buzz = max(buzz, 9)
+            narr = max(narr, 9)
+            theme = max(theme, 10)
+            scope = "major_company"
+            data["primary_source_importance"] = 10
+            data["has_independent_angle"] = True
+            data["critical_event"] = "top100_company_earnings"
+
         # #6 通常Botの投稿条件:
         # post_value>=7 かつ (直接関連度>=8 or 話題性+テーマ or ナラティブ+テーマ)
         direct_ok = rel >= NEWS_BOT_RELEVANCE_THRESHOLD
@@ -800,6 +842,21 @@ EIAで投稿可は「原油/ガソリン/天然ガス在庫・WTI/Brent需給・
         })
         return data
     except Exception as e:
+        if is_market_critical_earnings(item):
+            logger.error(
+                "時価総額上位100社の決算でAI採点に失敗。決定論的な最重要判定へ退避: %s",
+                type(e).__name__,
+            )
+            return {
+                "post_value": 10, "us_equity_relevance": 10,
+                "social_buzz_score": 9, "narrative_value": 9,
+                "theme_relevance": 10, "market_scope": "major_company",
+                "post_type": "breaking_news", "has_independent_angle": True,
+                "primary_source_importance": 10, "should_post": True,
+                "reason": "時価総額上位100社の決算発表を最重要イベントとして検出",
+                "skip_reason": "", "pass_path": "critical_official_earnings_fallback",
+                "critical_event": "top100_company_earnings",
+            }
         logger.warning(f"インパクト判定API失敗、高価値方針によりスキップ（フェイルクローズ）: {e}")
         return {"post_value": 0, "us_equity_relevance": 0, "social_buzz_score": 0,
                 "narrative_value": 0, "theme_relevance": 0, "market_scope": "unknown",
@@ -1214,7 +1271,11 @@ def main(mode: str = "image") -> None:
             )
             continue
 
-        record_evaluated(cand.url, cand.title, skip_reason="", should_post=True)
+        # Critical issuer earnings remain retryable until they are actually
+        # published. Recording them here would make a later timing/safety gate
+        # permanently hide the event on the next 30-minute run.
+        if record_evaluation_before_publication(cand):
+            record_evaluated(cand.url, cand.title, skip_reason="", should_post=True)
         item = cand
         impact = cand_impact
         pv = cand_pv
@@ -1292,10 +1353,15 @@ def main(mode: str = "image") -> None:
         logger.info("[INFO] should_post=true だが POST_ENABLED=false のため dry-run（未投稿）")
 
     window=posting_window(float(impact.get("x_topic_acceleration",0) or 0))
-    if not window["allow"]:
+    if dynamic_timing_blocks(item, window):
         _gate_log(should_post=False,skip_reason=f"dynamic_gap:{window['required_gap_minutes']}min",dry_run=DRY_RUN,actual_post_attempted=False)
         logger.info("動的投稿間隔により正常スキップ: %s",window)
         return
+    if not window["allow"]:
+        logger.warning(
+            "時価総額上位100社の決算のため動的投稿間隔を短縮。安全審査・投稿上限は維持: %s",
+            window,
+        )
 
     try:
         from post_registry import _load_history
@@ -1579,15 +1645,15 @@ def main(mode: str = "image") -> None:
                 str(impact.get("internal_market_trigger_id") or ""),
                 posted=bool(tweet_id),
                 mode=str(impact.get("publication_mode") or "unknown"),
-                reason="posted" if tweet_id else "dry_run_not_posted",
+                reason=_post_result_skip_reason(tweet_id),
                 detection_to_post_seconds=elapsed,
                 post_value=int(impact.get("post_value") or 0),
             )
         except Exception:
             logger.exception("Market-trigger publication metric recording failed safely")
-    _gate_log(should_post=True, skip_reason=("-" if tweet_id else "dry_run_not_posted"),
+    _gate_log(should_post=True, skip_reason=_post_result_skip_reason(tweet_id),
               safety_check_result=safety_result, shortened=shortened, tweet_id=tweet_id,
-              dry_run=DRY_RUN, actual_post_attempted=_post_enabled_now())
+              dry_run=DRY_RUN, actual_post_attempted=_actual_post_attempted())
 
 
 if __name__ == "__main__":

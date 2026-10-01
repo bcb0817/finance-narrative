@@ -45,6 +45,18 @@ class PostingPolicyTests(unittest.TestCase):
         ])
         self.assertTrue(check_post("three", now=now).reason.startswith("hourly_limit"))
 
+    def test_recovers_valid_history_after_malformed_entry(self):
+        now = datetime(2026, 7, 19, 12, 40, tzinfo=JST)
+        (self.state / "posted_history.json").write_text(
+            "[\n"
+            "  {\"tweet_id\": \"bad\", \"posted_at\": },\n"
+            f"  {{\"tweet_id\": \"1\", \"text\": \"one\", \"posted_at\": \"{(now - timedelta(minutes=30)).isoformat()}\"}},\n"
+            f"  {{\"tweet_id\": \"2\", \"text\": \"two\", \"posted_at\": \"{(now - timedelta(minutes=10)).isoformat()}\"}}\n"
+            "]",
+            encoding="utf-8",
+        )
+        self.assertTrue(check_post("three", now=now).reason.startswith("hourly_limit"))
+
     def test_blocks_ticker_and_theme_cooldowns(self):
         now = datetime(2026, 7, 19, 12, 40, tzinfo=JST)
         self._write([{

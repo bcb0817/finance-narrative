@@ -65,7 +65,7 @@ except Exception:
 
 BOTS = ("news", "narrative", "market-map", "weekly")
 SCHED_BOTS = BOTS + (
-    "metrics", "report", "radar", "fx-monitor", "market-data", "goal-monitor"
+    "metrics", "report", "daily-improvement", "radar", "fx-monitor", "market-data", "goal-monitor", "blog-social"
 )
 
 DEFAULT_SCHEDULE = {
@@ -79,11 +79,14 @@ DEFAULT_SCHEDULE = {
                "weekday": 6, "time": "21:00"},  # weekday: 0=月 ... 6=日
     # 投稿実績レポート（毎日22:00 JST。X APIから実績を取得して集計）
     "report": {"enabled": True, "type": "daily_jst", "time": "22:00"},
+    # レポート後に結果を検証し、失敗時は安全な範囲で自己回復する。
+    "daily-improvement": {"enabled": True, "type": "daily_jst", "time": "22:10"},
     "metrics": {"enabled": True, "type": "interval_minutes", "every_minutes": 30},
     "radar": {"enabled": False, "type": "daily_jst_times", "times": ["21:00","22:30"]},
     "fx-monitor": {"enabled": True, "type": "interval_minutes", "every_minutes": 5},
     "market-data": {"enabled": True, "type": "interval_minutes", "every_minutes": 15},
     "goal-monitor": {"enabled": True, "type": "interval_minutes", "every_minutes": 180},
+    "blog-social": {"enabled": False, "type": "interval_minutes", "every_minutes": 2},
 }
 
 
@@ -144,6 +147,14 @@ def load_schedule() -> dict:
     goal_interval = os.environ.get("DAILY_GOAL_MONITOR_INTERVAL_MINUTES", "180")
     if goal_interval.isdigit() and int(goal_interval) > 0:
         sched["goal-monitor"]["every_minutes"] = int(goal_interval)
+    sched["blog-social"]["enabled"] = bool(
+        sched["blog-social"].get("enabled", False)
+    ) and os.environ.get("BLOG_SOCIAL_AUTO_POST_ENABLED", "false").lower() in (
+        "1", "true", "yes"
+    )
+    social_interval = os.environ.get("BLOG_SOCIAL_POLL_INTERVAL_MINUTES", "2")
+    if social_interval.isdigit() and int(social_interval) > 0:
+        sched["blog-social"]["every_minutes"] = int(social_interval)
     return sched
 
 
@@ -298,7 +309,7 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
         env["FORCE_POST"] = "true"  # スケジュール条件のみ無視。安全審査はバイパスしない。
 
     if bot in (
-        "report", "metrics", "radar", "fx-monitor", "market-data", "goal-monitor"
+        "report", "daily-improvement", "metrics", "radar", "fx-monitor", "market-data", "goal-monitor", "blog-social"
     ):
         started = datetime.now(JST)
         print(f"[RUN] bot={bot} started={started:%Y-%m-%d %H:%M:%S}")
@@ -307,6 +318,12 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
             if bot == "report":
                 report_result=cmd_report(days=1)
                 rc=int(report_result.get("exit_code",0))
+            elif bot == "daily-improvement":
+                from common.daily_improvement import run_daily_improvement
+                improvement_result = run_daily_improvement()
+                print(json.dumps(improvement_result, ensure_ascii=False))
+                if improvement_result.get("status") == "failed":
+                    raise RuntimeError("daily improvement exhausted safe recovery attempts")
             elif bot == "metrics":
                 from common.metrics_collector import collect_metrics
                 metrics_result = collect_metrics()
@@ -319,6 +336,15 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
                 consume_event_trigger()
                 radar_result = run()
                 print(json.dumps(radar_result, ensure_ascii=False))
+                # WordPress is an optional, failure-isolated downstream surface.
+                # Only a successful xAI run may create a publish candidate.
+                if radar_result.get("status") in {"success", "ok"}:
+                    try:
+                        from integrations.wordpress.radar_publisher import publish
+                        wp_result = publish(dry_run=False)
+                        print(json.dumps({"wordpress_radar": wp_result}, ensure_ascii=False))
+                    except Exception as exc:
+                        print(f"[WARN] WordPress Radar同期失敗（daemonは継続）: {type(exc).__name__}")
                 # disabled/key missing/budget超過は既存Bot継続のため正常終了。
                 if radar_result.get("status") == "failed":
                     raise RuntimeError(f"radar failed: {radar_result.get('reason','unknown')}")
@@ -330,6 +356,9 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
                     "posted", "disabled", "provider_unavailable", "quality_blocked",
                     "no_material_movement", "gate_blocked", "not_posted",
                     "review_blocked", "content_blocked", "image_blocked",
+                    # A provider/display licensing block is an intentional safety
+                    # outcome, not a monitor failure that should restart the daemon.
+                    "license_blocked",
                 }:
                     raise RuntimeError(f"fx-alert failed: {fx_result.get('status','unknown')}")
             elif bot == "goal-monitor":
@@ -352,6 +381,10 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
                     )
                 except Exception:
                     pass
+            elif bot == "blog-social":
+                from integrations.wordpress.social_publisher import sync
+                social_result = sync()
+                print(json.dumps(social_result, ensure_ascii=False))
             else:
                 from market_data.monitor import run_market_monitor
                 market_result = run_market_monitor()
@@ -520,8 +553,8 @@ def cmd_status() -> None:
             f"${policy['estimated_x_write_usd']:.2f}/"
             f"${policy['monthly_write_budget_usd']:.2f} this month"
         )
-        from common.api_costs import monthly_openai_cost
-        openai_limit = float(os.getenv("OPENAI_MONTHLY_BUDGET_USD", "5.0") or 5.0)
+        from common.api_costs import monthly_openai_cost, openai_budget_limit
+        openai_limit = openai_budget_limit()
         print(f"OPENAI COST : ${monthly_openai_cost():.2f}/${openai_limit:.2f} this month")
         from common.xai_radar import usage_summary as xai_usage_summary
         xai=xai_usage_summary()
@@ -741,6 +774,17 @@ def cmd_xai_status() -> None:
     except Exception:
         critical="unavailable"
     print(f"unresolved critical alerts={critical}")
+
+
+def cmd_xai_sentiment(topic: str, context: str = "", symbols: str = "") -> None:
+    """Run the optional sentiment layer only; this command never posts to X."""
+    from common.xai_sentiment import analyze_x_sentiment
+    result = analyze_x_sentiment(
+        topic,
+        context=context,
+        symbols=[item.strip() for item in symbols.split(",") if item.strip()],
+    )
+    _print_json(result or {"available": False})
 
 
 def cmd_config_status() -> None:
@@ -1200,12 +1244,23 @@ def cmd_daily_goal_status() -> None:
     _print_json(goal_status())
 
 
+def cmd_top100_earnings_status() -> None:
+    from common.top100_earnings import status
+    _print_json(status())
+
+
 def cmd_metrics_quality(command: str, *, days: int = 7) -> None:
     from common.metrics_quality import missed_items, stage_status
     value = missed_items() if command == "metrics-missed" else stage_status(days=days)
     if command == "metrics-next-due":
         value = {"next_due": value["next_due"], "oldest_pending": value["oldest_pending"]}
     _print_json(value)
+
+
+def cmd_daily_improvement(*, force: bool = False) -> None:
+    """Run log analysis -> performance review -> next-run strategy, without posting."""
+    from common.daily_improvement import run_daily_improvement
+    _print_json(run_daily_improvement(force=force))
 
 
 def cmd_xai_quality(command: str, *, days: int = 30) -> None:
@@ -1422,6 +1477,23 @@ def main() -> None:
     smoke.add_argument("--dry-run", action="store_true", required=True)
     sub.add_parser("ai-deep", help="有効時のみSolで手動戦略分析（1日1回）")
     sub.add_parser("xai-status", help="xAI X Searchレーダーの状態と予算")
+    sub.add_parser("wp-status", help="WordPress Radar設定状態（秘密値非表示）")
+    sub.add_parser("wp-radar-status", help="WordPress Radar設定・queue状態")
+    wp_build = sub.add_parser("wp-radar-build", help="公開DTOをローカル生成")
+    wp_build.add_argument("--dry-run", action="store_true")
+    sub.add_parser("wp-radar-preview", help="公開DTOをfixtureでプレビュー")
+    wp_publish = sub.add_parser("wp-radar-publish", help="公開DTOをWordPressへ同期")
+    wp_publish.add_argument("--dry-run", action="store_true")
+    sub.add_parser("wp-radar-queue", help="WordPress Radar queue状態")
+    wp_retry = sub.add_parser("wp-radar-retry", help="失敗queueを再試行")
+    wp_retry.add_argument("--dry-run", action="store_true")
+    sub.add_parser("wp-radar-fixture", help="5テーマfixture公開DTOを生成")
+    xai_sentiment = sub.add_parser(
+        "xai-sentiment", help="Grok X Searchの市場センチメント推定（投稿なし）"
+    )
+    xai_sentiment.add_argument("--topic", required=True)
+    xai_sentiment.add_argument("--context", default="")
+    xai_sentiment.add_argument("--symbols", default="")
     xsmoke=sub.add_parser("xai-smoke", help="xAI設定を呼び出しなしで確認")
     xsmoke.add_argument("--dry-run",action="store_true",required=True)
     xai_run=sub.add_parser("xai-run",help="イベント起点のX Social Intelligenceを安全に実行")
@@ -1488,9 +1560,17 @@ def main() -> None:
         "impression-strategy-status",
         help="ChatGPTの日次インプレッション改善方針と適用回数",
     )
+    daily_improvement = sub.add_parser(
+        "daily-improvement", help="ログ分析から翌日改善方針までを実行（投稿なし）"
+    )
+    daily_improvement.add_argument("--force", action="store_true")
     sub.add_parser(
         "daily-goal-status",
         help="Daily 20-post target, achievement rate, and bounded auto-tuning",
+    )
+    sub.add_parser(
+        "top100-earnings-status",
+        help="時価総額上位100社の決算監視・投稿待ち状態",
     )
     sub.add_parser("metrics-status", help="Metrics collection status")
     sub.add_parser("metrics-stage-status", help="Stage-level metrics status")
@@ -1614,6 +1694,24 @@ def main() -> None:
     elif args.cmd == "ai-batch-submit": cmd_ai_batch_submit(args.input, args.operation)
     elif args.cmd == "ai-batch-cancel": cmd_ai_batch_cancel(args.batch_id)
     elif args.cmd == "xai-status": cmd_xai_status()
+    elif args.cmd in {"wp-status", "wp-radar-status", "wp-radar-build", "wp-radar-preview",
+                     "wp-radar-publish", "wp-radar-queue", "wp-radar-retry", "wp-radar-fixture"}:
+        from integrations.wordpress.client import WordPressRadarClient
+        from integrations.wordpress.queue import RadarPublishQueue
+        from integrations.wordpress.radar_publisher import build_public, publish, retry_queue
+        if args.cmd in {"wp-status", "wp-radar-status"}:
+            result = WordPressRadarClient.from_env().status()
+            if args.cmd == "wp-radar-status":
+                rows = RadarPublishQueue().rows()
+                result["queue"] = {state: sum(r.get("status") == state for r in rows) for state in ("pending","published","failed","retrying","expired")}
+        elif args.cmd == "wp-radar-build": result = build_public(write=not args.dry_run)
+        elif args.cmd in {"wp-radar-preview", "wp-radar-fixture"}: result = build_public(fixture=True)
+        elif args.cmd == "wp-radar-publish": result = publish(dry_run=args.dry_run)
+        elif args.cmd == "wp-radar-queue": result = {"rows": RadarPublishQueue().rows()}
+        else: result = retry_queue(dry_run=args.dry_run)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.cmd == "xai-sentiment":
+        cmd_xai_sentiment(args.topic, args.context, args.symbols)
     elif args.cmd in {
         "xai-run","xai-events","xai-event-show","xai-observations","xai-delta",
         "xai-accounts","xai-expert-watch","xai-exploration-status",
@@ -1633,7 +1731,9 @@ def main() -> None:
         )
     elif args.cmd == "rss-status": cmd_rss_status()
     elif args.cmd == "impression-strategy-status": cmd_impression_strategy_status()
+    elif args.cmd == "daily-improvement": cmd_daily_improvement(force=args.force)
     elif args.cmd == "daily-goal-status": cmd_daily_goal_status()
+    elif args.cmd == "top100-earnings-status": cmd_top100_earnings_status()
     elif args.cmd == "xai-smoke":
         print("[xai-smoke] config-only dry-run（検索・投稿なし）"); cmd_xai_status()
     elif args.cmd == "config-status": cmd_config_status()

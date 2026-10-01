@@ -160,8 +160,19 @@ def run_narrative(post: bool = False, out_path: str = OUT_PATH):
             final_caption=caption, image_path=image_path))
         return None
 
-    # ===== 投稿（240字以内は単発、超えたらスレッド）=====
-    use_thread = weighted_len(caption) > 240 or caption.endswith("…")
+    # スレッドは明示的に有効化した場合のみ使用する。既定では長文も投稿しない。
+    thread_posting_enabled = os.environ.get("THREAD_AUTO_POST_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+    requires_thread = weighted_len(caption) > 240 or caption.endswith("…")
+    if requires_thread and not thread_posting_enabled:
+        logger.info("スレッド既定無効のため長文ナラティブを投稿しません。")
+        logger.info(format_decision_log(
+            selected_post_type="market_narrative", post_value=post_value,
+            skip_reason="thread_disabled_overlength",
+            source_titles=top.get("source_titles", []),
+            ticker=",".join(top.get("tickers", []) or []),
+            final_caption=caption, image_path=image_path))
+        return None
+    use_thread = requires_thread
     parent_text, reply_texts = (caption, [])
     if use_thread:
         parent_text, reply_texts = build_x_thread_text(caption)

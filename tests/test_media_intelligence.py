@@ -64,6 +64,14 @@ class MediaIntelligenceTests(unittest.TestCase):
         self.assertEqual(rank_posts(posts, snapshots, stage="6h")["eligible"], 0)
         self.assertEqual(rank_posts(posts, snapshots, stage="24h")["eligible"], 1)
 
+    def test_rank_accepts_snapshot_at_configured_24h_window_start(self):
+        posts = [{"tweet_id": "1", "text": "sample"}]
+        snapshots = [{"tweet_id": "1", "stage": "24h", "post_age_hours": 23.0,
+                      "impressions": 100, "metrics_collected_at": "2026-01-02T00:00:00+09:00"}]
+        self.assertEqual(rank_posts(posts, snapshots, stage="24h")["eligible"], 1)
+        snapshots[0]["post_age_hours"] = 22.99
+        self.assertEqual(rank_posts(posts, snapshots, stage="24h")["eligible"], 0)
+
     def test_insufficient_data(self):
         summary = build_daily_summary([], [], datetime.now(timezone(timedelta(hours=9))))
         self.assertEqual(summary["data_status"], "データ不足")

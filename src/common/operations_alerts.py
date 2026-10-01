@@ -210,6 +210,43 @@ def evaluate(now: datetime | None=None) -> list[dict]:
                 "bot": "xai",
                 "detail": f"xAI status inspection failed: {type(exc).__name__}",
             })
+    try:
+        from common.top100_earnings import status as top100_earnings_status
+        earnings = top100_earnings_status(now=now)
+        issues = set(earnings.get("issues", []))
+        universe = earnings.get("universe", {})
+        queue = earnings.get("publication_queue", {})
+        if "universe_incomplete" in issues:
+            alerts.append({
+                "code": "top100_earnings_universe_incomplete",
+                "severity": "high",
+                "bot": "news",
+                "detail": f"earnings universe has {universe.get('count', 0)}/100 companies",
+            })
+        if "universe_stale" in issues:
+            alerts.append({
+                "code": "top100_earnings_universe_stale",
+                "severity": "high",
+                "bot": "news",
+                "detail": f"earnings universe age is {universe.get('age_hours')} hours",
+            })
+        if "publication_pending_too_long" in issues:
+            alerts.append({
+                "code": "top100_earnings_publication_delayed",
+                "severity": "high",
+                "bot": "news",
+                "detail": (
+                    f"{queue.get('pending_count', 0)} earnings event(s) pending; "
+                    f"oldest is {queue.get('oldest_pending_hours')} hours"
+                ),
+            })
+    except Exception as exc:
+        alerts.append({
+            "code": "top100_earnings_status_unavailable",
+            "severity": "high",
+            "bot": "news",
+            "detail": f"earnings monitoring status failed: {type(exc).__name__}",
+        })
     return [{**row,"detected_at":now.isoformat()} for row in alerts]
 
 

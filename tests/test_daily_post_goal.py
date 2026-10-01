@@ -55,9 +55,9 @@ class DailyPostGoalTests(unittest.TestCase):
             self.assertEqual(policy["effective_values"]["QUIET_MIN_GAP_MINUTES"], 50)
             self.assertEqual(policy["effective_values"]["QUIET_MAX_GAP_MINUTES"], 105)
             self.assertEqual(policy["effective_values"]["NEWS_POST_VALUE_THRESHOLD"], 6)
-            self.assertEqual(policy["effective_values"]["DAILY_POST_LIMIT"], 32)
-            self.assertEqual(policy["effective_values"]["HOURLY_POST_LIMIT"], 3)
-            self.assertEqual(policy["effective_values"]["X_WRITE_MONTHLY_BUDGET_USD"], 16)
+            self.assertNotIn("DAILY_POST_LIMIT", policy["effective_values"])
+            self.assertNotIn("HOURLY_POST_LIMIT", policy["effective_values"])
+            self.assertNotIn("X_WRITE_MONTHLY_BUDGET_USD", policy["effective_values"])
             self.assertEqual(policy["effective_values"]["SAFETY_REVIEW_RETRY_LIMIT"], 1)
             self.assertIn("fact_confirmation", policy["protected_controls_unchanged"])
             self.assertFalse(policy["arbitrary_source_editing"])
@@ -103,6 +103,25 @@ class DailyPostGoalTests(unittest.TestCase):
                 result = posting_window(0.0, now)
             self.assertGreaterEqual(result["required_gap_minutes"], 45)
             self.assertLessEqual(result["required_gap_minutes"], 75)
+
+    def test_fixed_guardrails_ignore_stale_policy_values(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            learning = root / "learning"
+            learning.mkdir()
+            (learning / "daily_post_goal_policy.json").write_text(
+                json.dumps({"effective_values": {
+                    "DAILY_POST_LIMIT": 40,
+                    "HOURLY_POST_LIMIT": 4,
+                    "X_WRITE_MONTHLY_BUDGET_USD": 20,
+                }}), encoding="utf-8"
+            )
+            with patch.object(goal, "state_dir", return_value=root):
+                self.assertEqual(goal.effective_int("DAILY_POST_LIMIT", 30), 30)
+                self.assertEqual(goal.effective_int("HOURLY_POST_LIMIT", 2), 2)
+                self.assertEqual(
+                    goal.effective_float("X_WRITE_MONTHLY_BUDGET_USD", 15.0), 15.0
+                )
 
     def test_catch_up_requests_one_extra_run_only_when_behind(self):
         now = datetime(2026, 8, 4, 12, 0, tzinfo=goal.JST)
@@ -189,7 +208,7 @@ class DailyPostGoalTests(unittest.TestCase):
             self.assertEqual(first["recovery_news_runs"], 2)
             self.assertEqual(policy["effective_values"]["NEWS_MAX_CANDIDATES"], 25)
             self.assertEqual(policy["effective_values"]["NEWS_CANDIDATE_POOL_SIZE"], 125)
-            self.assertEqual(policy["effective_values"]["HOURLY_POST_LIMIT"], 4)
+            self.assertNotIn("HOURLY_POST_LIMIT", policy["effective_values"])
             self.assertEqual(second["status"], "already_monitored")
             self.assertTrue(
                 (root / "learning" / "daily_goal_3h_monitor.jsonl").exists()

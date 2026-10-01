@@ -10,6 +10,7 @@ from common import performance_learning as learning
 from common import daily_post_goal
 from common.daily_log_analysis import redact
 from common.operations_alerts import notify_impression_strategy
+from common.openai_service import DailyLimitError
 
 
 def _metrics():
@@ -88,9 +89,6 @@ class ImpressionStrategyTests(unittest.TestCase):
                     "NEWS_BUZZ_THRESHOLD",
                     "NEWS_NARRATIVE_THRESHOLD",
                     "NEWS_THEME_THRESHOLD",
-                    "DAILY_POST_LIMIT",
-                    "HOURLY_POST_LIMIT",
-                    "X_WRITE_MONTHLY_BUDGET_USD",
                     "SAFETY_REVIEW_RETRY_LIMIT",
                     "NEWS_MAX_CANDIDATES",
                     "NEWS_CANDIDATE_POOL_SIZE",
@@ -122,6 +120,31 @@ class ImpressionStrategyTests(unittest.TestCase):
         self.assertIn("<redacted>", prompt)
         self.assertIn("impression_strategy", schema["required"])
         self.assertFalse("OPENAI_API_KEY" in prompt)
+        self.assertEqual(
+            service.return_value.structured.call_args.kwargs["max_tokens"], 4000
+        )
+
+    def test_daily_limit_still_writes_deterministic_strategy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch.object(learning, "_root", return_value=root), \
+                 patch.object(daily_post_goal, "state_dir", return_value=root / "state"), \
+                 patch.object(learning, "_log_evidence", return_value={
+                     "status": "attention", "summary": {"errors": 1},
+                     "findings": [{"category": "network", "count": 1}],
+                     "error_samples": [], "secrets_redacted": True,
+                 }), \
+                 patch("common.openai_service.OpenAIService") as service:
+                service.return_value.structured.side_effect = DailyLimitError("limit")
+                result = learning.update_daily_learning(_metrics())
+                strategy = json.loads(
+                    (root / "latest_impression_strategy.json").read_text(encoding="utf-8")
+                )
+                context = learning.load_learning_context(max_chars=3000)
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(strategy["source"], "deterministic_daily_fallback")
+        self.assertTrue(strategy["strategy"]["objective"])
+        self.assertIn("安全ゲートを維持しつつ", context)
 
     def test_context_is_bounded_and_generation_continues_without_strategy(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -149,6 +172,9 @@ class ImpressionStrategyTests(unittest.TestCase):
         self.assertLessEqual(len(strategy["tomorrow_focus"][0]), 240)
         self.assertEqual(len(strategy["experiments"]), 3)
         self.assertEqual(strategy["confidence"], "low")
+        self.assertTrue(
+            strategy["objective"].startswith(learning.PRIMARY_OPTIMIZATION_OBJECTIVE)
+        )
 
     def test_stale_strategy_is_not_injected(self):
         with tempfile.TemporaryDirectory() as temp:

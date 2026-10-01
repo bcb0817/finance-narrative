@@ -16,11 +16,11 @@ from openai import OpenAI
 
 try:
     from runtime import JST, state_dir
-    from api_costs import ensure_openai_budget, record_openai_usage
+    from api_costs import ensure_openai_budget, record_openai_usage, release_openai_reservation
     from openai_config import OpenAIRole, env_bool, model_for, role_for_model, validate_models
 except ImportError:  # pragma: no cover
     from common.runtime import JST, state_dir
-    from common.api_costs import ensure_openai_budget, record_openai_usage
+    from common.api_costs import ensure_openai_budget, record_openai_usage, release_openai_reservation
     from common.openai_config import OpenAIRole, env_bool, model_for, role_for_model, validate_models
 
 logger = logging.getLogger(__name__)
@@ -114,36 +114,44 @@ class OpenAIService:
 
     def text(self, prompt: str, *, role=OpenAIRole.GENERATE, max_tokens=800,
              schema: dict | None=None, operation="text", reasoning: str | None=None):
-        _check_role(role); ensure_openai_budget(); model=model_for(role); started=time.perf_counter()
+        _check_role(role); model=model_for(role)
+        reservation_id = ensure_openai_budget(model=model, prompt=prompt, max_output_tokens=max_tokens)
+        started=time.perf_counter()
         kwargs={"model":model,"input":prompt,"max_output_tokens":max_tokens}
         if effort := _reasoning_effort(reasoning): kwargs["reasoning"]={"effort":effort}
         if schema: kwargs["text"]={"format":{"type":"json_schema","name":"result","strict":True,"schema":schema}}
         try:
             response=self.client.responses.create(**kwargs)
-            record_openai_usage(response, model)
+            record_openai_usage(response, model, reservation_id=reservation_id)
             _record_usage(role=role,model=model,endpoint="responses",started=started,success=True,fallback=False,operation=operation,usage=getattr(response,"usage",None))
             raw=getattr(response,"output_text","") or ""
             return json.loads(raw) if schema else raw
         except Exception as exc:
+            release_openai_reservation(reservation_id)
             _record_usage(role=role,model=model,endpoint="responses",started=started,success=False,fallback=False,operation=operation,error=type(exc).__name__)
             if role in (OpenAIRole.GENERATE,OpenAIRole.ANALYZE) and env_bool("OPENAI_FALLBACK_ENABLED",True) and _transient(exc):
                 return self.text(prompt,role=OpenAIRole.FALLBACK,max_tokens=max_tokens,schema=schema,operation=operation,reasoning="minimal")
             raise
 
-    def structured(self, prompt: str, schema: dict, *, role=OpenAIRole.REVIEW, operation="structured") -> dict:
+    def structured(self, prompt: str, schema: dict, *, role=OpenAIRole.REVIEW,
+                   operation="structured", max_tokens: int=1600) -> dict:
         for attempt in range(2):
-            try: return self.text(prompt,role=role,max_tokens=1600,schema=schema,operation=operation,reasoning="minimal" if role != OpenAIRole.ANALYZE else "medium")
+            try: return self.text(prompt,role=role,max_tokens=max_tokens,schema=schema,operation=operation,reasoning="minimal" if role != OpenAIRole.ANALYZE else "medium")
             except (json.JSONDecodeError, ValueError):
                 if attempt: raise
         raise ValueError("structured output failed")
 
     def embed(self, text: str, *, operation="embedding") -> list[float]:
-        role=OpenAIRole.EMBED; _check_role(role); ensure_openai_budget(); model=model_for(role); started=time.perf_counter()
+        role=OpenAIRole.EMBED; _check_role(role); model=model_for(role)
+        reservation_id = ensure_openai_budget(model=model, prompt=text, max_output_tokens=0)
+        started=time.perf_counter()
         try:
             response=self.client.embeddings.create(model=model,input=text)
+            record_openai_usage(response, model, reservation_id=reservation_id)
             _record_usage(role=role,model=model,endpoint="embeddings",started=started,success=True,fallback=False,operation=operation,usage=getattr(response,"usage",None))
             return list(response.data[0].embedding)
         except Exception as exc:
+            release_openai_reservation(reservation_id)
             _record_usage(role=role,model=model,endpoint="embeddings",started=started,success=False,fallback=False,operation=operation,error=type(exc).__name__); raise
 
     def moderate(self, text: str) -> bool:

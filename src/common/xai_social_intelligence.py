@@ -984,6 +984,8 @@ def _schema() -> dict[str, Any]:
             "event_id", "topic_summary", "why_people_are_discussing_it",
             "dominant_narrative", "alternative_narratives", "strongest_dissent",
             "common_misconception", "unanswered_questions", "useful_expert_points",
+            "topic_summary_ja", "dominant_narrative_ja", "strongest_dissent_ja",
+            "common_misconception_ja",
             "market_implication_candidates", "facts_needing_confirmation",
             "potentially_false_claims", "content_angles", "channel_fit",
             "novelty_assessment", "confidence", "observed_posts",
@@ -995,6 +997,10 @@ def _schema() -> dict[str, Any]:
             "alternative_narratives": string_array,
             "strongest_dissent": {"type": "string"},
             "common_misconception": {"type": "string"},
+            "topic_summary_ja": {"type": "string"},
+            "dominant_narrative_ja": {"type": "string"},
+            "strongest_dissent_ja": {"type": "string"},
+            "common_misconception_ja": {"type": "string"},
             "unanswered_questions": string_array,
             "useful_expert_points": string_array,
             "market_implication_candidates": string_array,
@@ -1033,6 +1039,7 @@ def _fixed_instructions() -> str:
         "signal groups, giveaways, and bot-like repeated text. "
         "Separate confirmed local facts from X claims needing verification. "
         "Use the strict JSON schema."
+        " Write the base analysis fields in English and the four *_ja fields in natural Japanese."
     )
 
 
@@ -1045,6 +1052,8 @@ def _validate_structured_result(
         "event_id", "topic_summary", "why_people_are_discussing_it",
         "dominant_narrative", "alternative_narratives", "strongest_dissent",
         "common_misconception", "unanswered_questions", "useful_expert_points",
+        "topic_summary_ja", "dominant_narrative_ja", "strongest_dissent_ja",
+        "common_misconception_ja",
         "market_implication_candidates", "facts_needing_confirmation",
         "potentially_false_claims", "content_angles", "channel_fit",
         "novelty_assessment", "confidence", "observed_posts",
@@ -1337,6 +1346,8 @@ def run(
                 for key in (
                     "topic_summary", "why_people_are_discussing_it", "dominant_narrative",
                     "alternative_narratives", "strongest_dissent", "common_misconception",
+                    "topic_summary_ja", "dominant_narrative_ja", "strongest_dissent_ja",
+                    "common_misconception_ja",
                     "unanswered_questions", "useful_expert_points",
                     "market_implication_candidates", "facts_needing_confirmation",
                     "potentially_false_claims", "content_angles", "channel_fit",
@@ -1483,6 +1494,15 @@ def run(
     except Exception as exc:
         failure_stage = failure_stage or "request_or_parse"
         usage = _usage(response)
+        # Validation errors are fixed local codes, so recording them preserves
+        # diagnostic value without persisting an arbitrary provider exception.
+        failure_reason = str(exc) if (
+            isinstance(exc, ValueError)
+            and str(exc) in {
+                "invalid_structured_output", "invalid_structured_event",
+                "invalid_confidence", "structured_event_id_mismatch",
+            }
+        ) else None
         row = {
             "timestamp": current.isoformat(), "run_id": run_id,
             "request_id": str(getattr(response, "id", "") or ""),
@@ -1496,6 +1516,7 @@ def run(
             "news_candidates_created": 0,
             "content_opportunities_created": 0, "posts_created": 0, "post_ids": [],
             "failure_stage": failure_stage, "error_type": type(exc).__name__,
+            "failure_reason": failure_reason,
         }
         _record_run(row)
         state = {}
@@ -1514,6 +1535,7 @@ def run(
             pass
         return {
             "status": "failed", "reason": type(exc).__name__,
+            "failure_reason": failure_reason,
             "safe_failure": True, "events": [], "x_post_called": False,
         }
 

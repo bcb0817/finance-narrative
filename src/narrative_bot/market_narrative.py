@@ -41,7 +41,10 @@ def _gather_news(limit: int = 15) -> list[dict]:
     items = [i for i in items if is_recent(i, hours=36)]
     items.sort(key=score_item, reverse=True)
     items = deduplicate(items)[:limit]
-    return [{"title": i.title, "source": i.source, "group": i.source_group} for i in items]
+    return [{
+        "title": i.title, "source": i.source, "group": i.source_group,
+        "published_at": i.published,
+    } for i in items]
 
 
 def _gather_events(limit: int = 12) -> list[dict]:
@@ -80,7 +83,22 @@ def gather_signals() -> dict:
         "news": _gather_news(),
         "events": _gather_events(),
         "reddit": _gather_reddit(),
+        "x_sentiment": None,
     }
+    if signals["news"]:
+        lead = signals["news"][0]
+        try:
+            from common.xai_sentiment import analyze_x_sentiment
+            signals["x_sentiment"] = analyze_x_sentiment(
+                lead["title"],
+                context=json.dumps({
+                    "headline": lead["title"],
+                    "source": lead["source"],
+                    "published_at": lead.get("published_at", ""),
+                }, ensure_ascii=False),
+            )
+        except Exception as e:
+            logger.warning("[XAI] Sentiment analysis failed open: %s", type(e).__name__)
     logger.info(
         "signals: news=%d / events=%d / reddit=%d",
         len(signals["news"]), len(signals["events"]), len(signals["reddit"]),
@@ -92,6 +110,9 @@ def _build_prompt(signals: dict) -> str:
     news = "\n".join(f'- [{n["group"]}] {n["title"]}（{n["source"]}）' for n in signals["news"]) or "（なし）"
     events = "\n".join(f'- {e["date_jst"]} {e["time_jst"]} [{e["category"]}] {e["title"]}' for e in signals["events"]) or "（なし）"
     reddit = "\n".join(f'- {r["subreddit"]} ↑{r["score"]} 💬{r["comments"]}: {r["title"]}' for r in signals["reddit"]) or "（なし）"
+    x_sentiment = json.dumps(
+        signals.get("x_sentiment"), ensure_ascii=False, indent=2
+    ) if signals.get("x_sentiment") else "（利用不可または無効）"
 
     return f"""あなたは機関投資家向けのストラテジスト兼・金融メディア編集長です。
 目的はニュースの要約ではなく、「投資家が今何を気にしているか」を抽出し、
@@ -109,6 +130,14 @@ def _build_prompt(signals: dict) -> str:
 
 ■Reddit議論（話題性）:
 {reddit}
+
+■X Sentiment Estimate（Grok X Searchで確認できた関連投稿からの推定であり、
+X全体を代表する統計ではない）:
+{x_sentiment}
+
+X sentimentは市場反応の補助文脈としてのみ使うこと。多数派をそのまま反復せず、
+dominant_narratives、contrarian_view、post_angle、ニュース見出しとX上の解釈の
+乖離を重視する。X上の推測を確認済み事実として扱わないこと。
 
 市場ナラティブの「候補」を複数（2〜5件）抽出してください。最終的に画像化するのは
 最も価値の高い1件だけですが、ここでは候補を出し切ってください。

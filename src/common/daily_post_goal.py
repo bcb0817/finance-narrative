@@ -21,9 +21,6 @@ TUNABLE_DEFAULTS = {
     "NEWS_BUZZ_THRESHOLD": 8,
     "NEWS_NARRATIVE_THRESHOLD": 8,
     "NEWS_THEME_THRESHOLD": 8,
-    "DAILY_POST_LIMIT": 30,
-    "HOURLY_POST_LIMIT": 2,
-    "X_WRITE_MONTHLY_BUDGET_USD": 15.0,
     "SAFETY_REVIEW_RETRY_LIMIT": 0,
     "NEWS_MAX_CANDIDATES": 15,
     "NEWS_CANDIDATE_POOL_SIZE": 75,
@@ -38,9 +35,6 @@ TUNABLE_BOUNDS = {
     "NEWS_BUZZ_THRESHOLD": (6, 9),
     "NEWS_NARRATIVE_THRESHOLD": (6, 9),
     "NEWS_THEME_THRESHOLD": (6, 9),
-    "DAILY_POST_LIMIT": (30, 40),
-    "HOURLY_POST_LIMIT": (2, 4),
-    "X_WRITE_MONTHLY_BUDGET_USD": (15.0, 20.0),
     "SAFETY_REVIEW_RETRY_LIMIT": (0, 1),
     "NEWS_MAX_CANDIDATES": (15, 25),
     "NEWS_CANDIDATE_POOL_SIZE": (75, 125),
@@ -55,13 +49,15 @@ MISSED_STEPS = {
     "NEWS_BUZZ_THRESHOLD": -1,
     "NEWS_NARRATIVE_THRESHOLD": -1,
     "NEWS_THEME_THRESHOLD": -1,
-    "DAILY_POST_LIMIT": 2,
-    "HOURLY_POST_LIMIT": 1,
-    "X_WRITE_MONTHLY_BUDGET_USD": 1.0,
     "SAFETY_REVIEW_RETRY_LIMIT": 1,
     "NEWS_MAX_CANDIDATES": 5,
     "NEWS_CANDIDATE_POOL_SIZE": 25,
     "DAILY_GOAL_MAX_EXTRA_NEWS_RUNS": 1,
+}
+FIXED_GUARDRAILS = {
+    "DAILY_POST_LIMIT": 30,
+    "HOURLY_POST_LIMIT": 2,
+    "X_WRITE_MONTHLY_BUDGET_USD": 15.0,
 }
 PROTECTED_CONTROLS = (
     "OPENAI_MONTHLY_BUDGET_USD",
@@ -188,6 +184,12 @@ def _current_values() -> dict[str, float]:
 
 def effective_int(name: str, default: int) -> int:
     """Read a runtime value, allowing only the explicit volume-tuning list."""
+    if name in FIXED_GUARDRAILS:
+        try:
+            configured = int(os.getenv(name, "") or FIXED_GUARDRAILS[name])
+        except ValueError:
+            configured = FIXED_GUARDRAILS[name]
+        return min(configured, int(FIXED_GUARDRAILS[name]))
     if name not in TUNABLE_DEFAULTS:
         try:
             return int(os.getenv(name, "") or default)
@@ -197,6 +199,12 @@ def effective_int(name: str, default: int) -> int:
 
 
 def effective_float(name: str, default: float) -> float:
+    if name in FIXED_GUARDRAILS:
+        try:
+            configured = float(os.getenv(name, "") or FIXED_GUARDRAILS[name])
+        except ValueError:
+            configured = FIXED_GUARDRAILS[name]
+        return min(configured, float(FIXED_GUARDRAILS[name]))
     if name not in TUNABLE_DEFAULTS:
         try:
             return float(os.getenv(name, "") or default)
@@ -207,14 +215,6 @@ def effective_float(name: str, default: float) -> float:
 
 def _runtime_bounds(name: str) -> tuple[float, float]:
     low, high = TUNABLE_BOUNDS[name]
-    if name == "DAILY_POST_LIMIT":
-        high = float(os.getenv("DAILY_GOAL_DAILY_LIMIT_HARD_MAX", "40") or 40)
-    elif name == "HOURLY_POST_LIMIT":
-        high = float(os.getenv("DAILY_GOAL_HOURLY_LIMIT_HARD_MAX", "4") or 4)
-    elif name == "X_WRITE_MONTHLY_BUDGET_USD":
-        high = float(
-            os.getenv("DAILY_GOAL_X_WRITE_BUDGET_HARD_MAX_USD", "20") or 20
-        )
     return float(low), float(high)
 
 
@@ -342,14 +342,6 @@ def _apply_missed_day_tuning(completed_day: date, shortfall: int) -> dict[str, A
     if enabled:
         for name, step in MISSED_STEPS.items():
             low, high = TUNABLE_BOUNDS[name]
-            if name == "DAILY_POST_LIMIT":
-                high = float(os.getenv("DAILY_GOAL_DAILY_LIMIT_HARD_MAX", "40") or 40)
-            elif name == "HOURLY_POST_LIMIT":
-                high = float(os.getenv("DAILY_GOAL_HOURLY_LIMIT_HARD_MAX", "4") or 4)
-            elif name == "X_WRITE_MONTHLY_BUDGET_USD":
-                high = float(
-                    os.getenv("DAILY_GOAL_X_WRITE_BUDGET_HARD_MAX_USD", "20") or 20
-                )
             after[name] = min(high, max(low, before[name] + step))
     changed = {
         name: {"before": before[name], "after": after[name]}
@@ -441,17 +433,8 @@ def goal_status(now: datetime | None = None) -> dict[str, Any]:
         for name in effective
         if name.startswith("NEWS_") and name.endswith("_THRESHOLD")
     )
-    result["post_limits_changed"] = any(
-        effective[name] != float(os.getenv(name, "") or TUNABLE_DEFAULTS[name])
-        for name in ("DAILY_POST_LIMIT", "HOURLY_POST_LIMIT")
-    )
-    result["budgets_changed"] = (
-        effective["X_WRITE_MONTHLY_BUDGET_USD"]
-        != float(
-            os.getenv("X_WRITE_MONTHLY_BUDGET_USD", "")
-            or TUNABLE_DEFAULTS["X_WRITE_MONTHLY_BUDGET_USD"]
-        )
-    )
+    result["post_limits_changed"] = False
+    result["budgets_changed"] = False
     result["auto_tune_enabled"] = (
         os.getenv("DAILY_GOAL_AUTO_TUNE_ENABLED", "true").lower() in TRUE_VALUES
     )
