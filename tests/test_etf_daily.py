@@ -8,7 +8,12 @@ import pytest
 spec = importlib.util.spec_from_file_location('etf_daily', Path(__file__).parents[1] / 'scripts/etf_daily.py')
 job = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(job)
-ASSETS = json.loads((Path(__file__).parents[2] / 'the-signal/ai-media/src/data/etf-signals.json').read_text(encoding='utf-8'))['assets']
+ASSETS = [
+    {'symbol': symbol, 'proxy': proxy, 'excluded': symbol == '1570',
+     'dataStatus': 'VALID', 'targetWeight': weight, 'decision': 'LONG',
+     'expiresAt': '2026-10-05T13:30:00+00:00', 'decisionSession': '2026-10-02'}
+    for symbol, proxy, weight in [('TQQQ', 'QQQ', .232), ('SOXL', 'SOXX', .096), ('1570', '1321.T', None)]
+]
 
 
 def test_post_text_preserves_direction_and_cannot_be_a_personal_order():
