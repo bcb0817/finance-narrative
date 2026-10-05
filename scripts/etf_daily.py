@@ -204,8 +204,9 @@ if __name__ == '__main__':
         result = run(args.preview)
     except Exception as exc:
         result = {'status': 'failed', 'reason': type(exc).__name__}
-    out = state_dir() / 'etf_daily_last_run.json'
-    write(out, result)
+    if not args.preview:
+        out = state_dir() / 'etf_daily_last_run.json'
+        write(out, result)
     print(json.dumps(result, ensure_ascii=False))
     if result['status'] == 'failed':
         sys.exit(1)
