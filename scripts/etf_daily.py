@@ -99,7 +99,10 @@ def live_snapshot(config, generation):
         raise ValueError('INVALID_LIVE_SNAPSHOT')
     if sorted(a['symbol'] for a in data['assets']) != ['1570', 'SOXL', 'TQQQ']:
         raise ValueError('INVALID_LIVE_SYMBOLS')
-    if datetime.fromisoformat(data['generatedAt'].replace('Z', '+00:00')) < datetime.fromisoformat(generation):
+    expected = datetime.fromisoformat(generation)
+    # The public TypeScript projection serializes milliseconds; Python keeps microseconds.
+    expected = expected.replace(microsecond=expected.microsecond // 1000 * 1000)
+    if datetime.fromisoformat(data['generatedAt'].replace('Z', '+00:00')) < expected:
         return None
     if datetime.fromisoformat(data['generatedAt'].replace('Z', '+00:00')) > datetime.now(timezone.utc):
         raise ValueError('FUTURE_LIVE_SNAPSHOT')

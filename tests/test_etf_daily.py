@@ -30,6 +30,16 @@ def test_post_text_preserves_direction_and_cannot_be_a_personal_order():
     assert '対象外' in job.render(ASSETS[2], now)
 
 
+def test_live_snapshot_matches_public_milliseconds_but_rejects_older_generation(monkeypatch):
+    from io import BytesIO
+    generation = '2026-10-05T06:27:29.696387+00:00'
+    data = {'version': 1, 'source': 'Yahoo Finance / yfinance', 'generatedAt': '2026-10-05T06:27:29.696Z', 'assets': ASSETS}
+    monkeypatch.setattr(job.urllib.request, 'urlopen', lambda *_, **__: BytesIO(json.dumps(data).encode()))
+    assert job.live_snapshot({'site_url': 'https://example.invalid'}, generation) == data
+    data['generatedAt'] = '2026-10-05T06:27:29.695Z'
+    assert job.live_snapshot({'site_url': 'https://example.invalid'}, generation) is None
+
+
 @pytest.mark.parametrize('scenario', ['success', 'ambiguous', 'policy_block', 'wrong_account'])
 def test_one_post_per_symbol_and_day_even_after_ambiguous_response(tmp_path, monkeypatch, scenario):
     ambiguous = scenario == 'ambiguous'
