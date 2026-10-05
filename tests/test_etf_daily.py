@@ -25,8 +25,9 @@ def test_post_text_preserves_direction_and_cannot_be_a_personal_order():
     assert '対象外' in job.render(ASSETS[2], now)
 
 
-@pytest.mark.parametrize('ambiguous', [False, True])
-def test_one_post_per_symbol_and_day_even_after_ambiguous_response(tmp_path, monkeypatch, ambiguous):
+@pytest.mark.parametrize('scenario', ['success', 'ambiguous', 'policy_block', 'wrong_account'])
+def test_one_post_per_symbol_and_day_even_after_ambiguous_response(tmp_path, monkeypatch, scenario):
+    ambiguous = scenario == 'ambiguous'
     (tmp_path / 'config').mkdir()
     cfg = {'enabled': True, 'account_id': 'test-id', 'account_username': 'test-user', 'lab_root': str(tmp_path)}
     (tmp_path / 'config/etf_daily.json').write_text(json.dumps(cfg), encoding='utf-8')
@@ -46,16 +47,25 @@ def test_one_post_per_symbol_and_day_even_after_ambiguous_response(tmp_path, mon
     calls = []
     class Client:
         def get_me(self, **_):
-            return SimpleNamespace(data=SimpleNamespace(id='test-id', username='test-user'))
+            return SimpleNamespace(data=SimpleNamespace(id='wrong-id' if scenario == 'wrong_account' else 'test-id', username='test-user'))
         def create_tweet(self, **kwargs):
             calls.append(kwargs['text'])
             if ambiguous and len(calls) == 1:
                 raise TimeoutError('simulated')
             return SimpleNamespace(data={'id': str(len(calls))})
     monkeypatch.setattr('common.x_client.get_tweepy_client', lambda: Client())
-    monkeypatch.setattr('common.posting_policy.check_post', lambda _: SimpleNamespace(allowed=True))
+    monkeypatch.setattr('common.posting_policy.check_post', lambda _: SimpleNamespace(allowed=scenario != 'policy_block', reason='hourly_limit:2/2'))
     monkeypatch.setattr('common.post_registry.record_post', lambda *_, **__: None)
+    if scenario == 'wrong_account':
+        with pytest.raises(RuntimeError, match='WRONG_X_ACCOUNT'):
+            job.run()
+        assert not calls
+        return
     first, second = job.run(), job.run()
+    if scenario == 'policy_block':
+        assert not calls and not first['posts'] and not second['posts']
+        assert all(p['reason'] == 'hourly_limit:2/2' for p in second['pending'])
+        return
     assert len(calls) == 3
     assert len(first['posts']) == len(second['posts']) == 3
     assert sum(p['status'] == 'uncertain' for p in second['posts']) == int(ambiguous)
