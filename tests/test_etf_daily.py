@@ -10,9 +10,10 @@ job = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(job)
 ASSETS = [
     {'symbol': symbol, 'proxy': proxy, 'excluded': symbol == '1570',
+     'leverage': -3 if symbol in ('SQQQ','SOXS','FAZ') else 3,
      'dataStatus': 'VALID', 'targetWeight': weight, 'decision': 'LONG',
      'expiresAt': '2026-10-05T13:30:00+00:00', 'decisionSession': '2026-10-02'}
-    for symbol, proxy, weight in [('TQQQ', 'QQQ', .232), ('SOXL', 'SOXX', .096), ('1570', '1321.T', None), ('FAS', 'XLF', .15)]
+    for symbol, proxy, weight in [('TQQQ', 'QQQ', .232), ('SOXL', 'SOXX', .096), ('1570', '1321.T', None), ('FAS', 'XLF', .15), ('SQQQ', 'QQQ', .2), ('SOXS', 'SOXX', .1), ('FAZ', 'XLF', .2)]
 ]
 
 
@@ -28,6 +29,9 @@ def test_post_text_preserves_direction_and_cannot_be_a_personal_order():
     assert '期限切れ' in job.render(ASSETS[0], now + timedelta(days=1))
     assert 'Buy方向' not in job.render({**ASSETS[0], 'dataStatus': 'STALE'}, now)
     assert '対象外' in job.render(ASSETS[2], now)
+    inverse = next(a for a in ASSETS if a['symbol'] == 'SQQQ')
+    assert 'QQQの確定終値＜200日平均' in job.render(inverse, now)
+    assert 'QQQの確定終値≧200日平均' in job.render({**inverse, 'decision':'CASH','targetWeight':0}, now)
 
 
 def test_live_snapshot_matches_public_milliseconds_but_rejects_older_generation(monkeypatch):
@@ -81,6 +85,6 @@ def test_one_post_per_symbol_and_day_even_after_ambiguous_response(tmp_path, mon
         assert not calls and not first['posts'] and not second['posts']
         assert all(p['reason'] == 'hourly_limit:2/2' for p in second['pending'])
         return
-    assert len(calls) == 4
-    assert len(first['posts']) == len(second['posts']) == 4
+    assert len(calls) == 7
+    assert len(first['posts']) == len(second['posts']) == 7
     assert sum(p['status'] == 'uncertain' for p in second['posts']) == int(ambiguous)

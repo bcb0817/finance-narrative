@@ -1,4 +1,4 @@
-"""Daily ETF refresh -> verified public snapshot -> four bounded X updates.
+"""Daily ETF refresh -> verified public snapshot -> seven bounded X updates.
 
 Uses the existing finance credentials and budgets; never sends Discord messages.
 Ambiguous X responses stay uncertain rather than risk posting twice.
@@ -38,7 +38,9 @@ def render(asset, now, holiday=False):
         direction, reason = '期限切れ', '保存された注文案は失効。次の確定日足を待ちます'
     else:
         direction = 'Buy方向' if asset['decision'] == 'LONG' else 'Sell方向'
-        reason = f"{proxy}の確定終値{'＞' if asset['decision'] == 'LONG' else '≦'}200日平均"
+        inverse = asset.get('leverage', 3) < 0
+        relation = ('＜' if asset['decision'] == 'LONG' else '≧') if inverse else ('＞' if asset['decision'] == 'LONG' else '≦')
+        reason = f"{proxy}の確定終値{relation}200日平均" + ('（逆方向ETF）' if inverse else '')
     target = '保留' if asset['targetWeight'] is None else f"{asset['targetWeight'] * 100:.1f}%"
     text = (f"【{symbol} 日次更新】\n方向：{direction}\n目標比率：{target}（研究値）\n"
             f"根拠：{reason}\n基準日：{asset['decisionSession'] or '未確認'}\n"
@@ -97,7 +99,7 @@ def live_snapshot(config, generation):
         raise
     if data.get('version') != 1 or data.get('source') != 'Yahoo Finance / yfinance':
         raise ValueError('INVALID_LIVE_SNAPSHOT')
-    if sorted(a['symbol'] for a in data['assets']) != ['1570', 'FAS', 'SOXL', 'TQQQ']:
+    if sorted(a['symbol'] for a in data['assets']) != ['1570', 'FAS', 'FAZ', 'SOXL', 'SOXS', 'SQQQ', 'TQQQ']:
         raise ValueError('INVALID_LIVE_SYMBOLS')
     expected = datetime.fromisoformat(generation)
     # The public TypeScript projection serializes milliseconds; Python keeps microseconds.
@@ -129,7 +131,7 @@ def run(preview=False):
         progress_path = state_dir() / 'etf_daily_progress.json'
         progress = json.loads(progress_path.read_text(encoding='utf-8')) if progress_path.exists() else {}
         slots = json.loads(command([python, '-m', 'lab.daily', '--slots'], lab))
-        for group, symbols in [('US', ['TQQQ', 'SOXL', 'FAS']), ('JP', ['1570'])]:
+        for group, symbols in [('US', ['TQQQ', 'SOXL', 'FAS', 'SQQQ', 'SOXS', 'FAZ']), ('JP', ['1570'])]:
             if all(db.execute('SELECT status FROM posts WHERE day=? AND symbol=?', (day, symbol)).fetchone() for symbol in symbols):
                 continue
             key = day + '-' + group
@@ -192,7 +194,7 @@ def run(preview=False):
                 db.execute('BEGIN IMMEDIATE')
         db.commit()
         rows = db.execute('SELECT symbol,status,tweet_id FROM posts WHERE day=?', (day,)).fetchall()
-        status = 'attention' if any(v == 'uncertain' for _, v, _ in rows) else ('completed' if len(rows) == 4 else 'waiting')
+        status = 'attention' if any(v == 'uncertain' for _, v, _ in rows) else ('completed' if len(rows) == 7 else 'waiting')
         return {'status': status, 'day': day, 'pending': pending,
                 'posts': [{'symbol': s, 'status': v, 'tweet_id': t} for s, v, t in rows]}
     finally:
