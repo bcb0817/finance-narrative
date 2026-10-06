@@ -55,6 +55,10 @@ def event_result(candidate, *, confidence="possible", posts=None, channels=None)
         "alternative_narratives": ["影響は限定的という見方"],
         "strongest_dissent": "織り込み済みとの反論",
         "common_misconception": "X上の観測件数を市場全体とみなす誤解",
+        "topic_summary_ja": "確認済みイベントに対する市場参加者の反応",
+        "dominant_narrative_ja": "影響の大きさを巡る議論",
+        "strongest_dissent_ja": "すでに織り込み済みとの反論",
+        "common_misconception_ja": "X上の観測件数を市場全体とみなす誤解",
         "unanswered_questions": ["公式発表の追加情報はあるか"],
         "useful_expert_points": ["一次情報を優先する"],
         "market_implication_candidates": ["短期変動との時間的整合"],
@@ -480,6 +484,7 @@ class XaiSocialIntelligenceTests(unittest.TestCase):
             now=self.now,
         )
         self.assertEqual(malformed["status"], "failed")
+        self.assertEqual(malformed["failure_reason"], "invalid_structured_event")
         self.assertTrue(malformed["safe_failure"])
         timed_out = run(
             candidates=[self.candidate(source_id="timeout")],
@@ -487,6 +492,24 @@ class XaiSocialIntelligenceTests(unittest.TestCase):
             now=self.now,
         )
         self.assertEqual(timed_out["status"], "failed")
+
+    def test_structured_event_id_mismatch_records_bounded_diagnostics(self):
+        candidate = self.candidate()
+        result = run(
+            fixture_response={"events": [event_result(
+                self.candidate(source_id="other")
+            )]},
+            candidates=[candidate],
+            now=self.now,
+        )
+        self.assertEqual(result["failure_reason"], "structured_event_id_mismatch")
+        row = read_jsonl("runs.jsonl")[-1]
+        self.assertEqual(row["structured_result_diagnostics"], {
+            "selected_event_count": 1,
+            "returned_event_count": 1,
+            "valid_event_row_count": 1,
+            "unique_returned_event_id_count": 1,
+        })
 
     def test_exploration_budget_cap(self):
         folder = Path(self.temp.name) / "xai"

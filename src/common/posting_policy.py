@@ -48,10 +48,64 @@ def _env_float(name: str, default: float) -> float:
 def _history() -> list[dict]:
     path = state_dir() / "posted_history.json"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
         return data if isinstance(data, list) else []
     except (OSError, json.JSONDecodeError):
+        # Preserve posting limits when one historical record is malformed.
+        # Entries are written one-per-indented object, so valid neighbors can
+        # be recovered without treating the entire history as empty.
+        recovered: list[dict] = []
+        try:
+            body = raw.strip()[1:-1]
+            for chunk in re.split(r"\},\s*\n\s{2}\{", body):
+                candidate = "{" + chunk.strip().strip(",").strip("{}").strip() + "}"
+                try:
+                    entry = json.loads(candidate)
+                    if isinstance(entry, dict):
+                        recovered.append(entry)
+                except json.JSONDecodeError:
+                    continue
+        except (NameError, OSError):
+            pass
+        return recovered
+
+
+def _uncertain_attempts() -> list[dict]:
+    """Return live-write attempts whose X response did not include an ID.
+
+    A missing ID is ambiguous: X may have accepted the write even though the
+    client failed before reading the response.  These attempts must therefore
+    consume the same rate capacity as a confirmed post until they age out.
+    """
+    path = state_dir() / "uncertain_post_attempts.jsonl"
+    try:
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except (OSError, json.JSONDecodeError):
         return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def record_uncertain_attempt(text: str, *, now: datetime | None = None) -> None:
+    """Durably reserve rate-limit capacity after an ambiguous live X write."""
+    current = now or datetime.now(JST)
+    path = state_dir() / "uncertain_post_attempts.jsonl"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps({"attempted_at": current.isoformat(), "text": text or ""}, ensure_ascii=False) + "\n")
+    except OSError:
+        # Logging the failed post remains the fallback; never turn a completed
+        # X write into a process error merely because this guard could not log.
+        return
+
+
+def _attempted_at(entry: dict) -> datetime | None:
+    try:
+        value = datetime.fromisoformat(str(entry.get("attempted_at", "")))
+        return value if value.tzinfo else value.replace(tzinfo=JST)
+    except ValueError:
+        return None
 
 
 def _posted_at(entry: dict) -> datetime | None:
@@ -85,12 +139,17 @@ def check_post(text: str, *, now: datetime | None = None) -> PolicyDecision:
     entries = [(e, _posted_at(e)) for e in _history()]
     entries = [(e, dt.astimezone(JST)) for e, dt in entries if dt is not None]
     today = [(e, dt) for e, dt in entries if dt.date() == now.date()]
+    uncertain = [(e, _attempted_at(e)) for e in _uncertain_attempts()]
+    uncertain = [(e, dt.astimezone(JST)) for e, dt in uncertain if dt is not None and dt <= now]
+    uncertain_today = [(e, dt) for e, dt in uncertain if dt.date() == now.date()]
     daily_limit = effective_int("DAILY_POST_LIMIT", 30)
-    if len(today) >= daily_limit:
-        return PolicyDecision(False, f"daily_limit:{len(today)}/{daily_limit}")
+    if len(today) + len(uncertain_today) >= daily_limit:
+        return PolicyDecision(False, f"daily_limit:{len(today) + len(uncertain_today)}/{daily_limit}")
 
     hour_start = now.replace(minute=0, second=0, microsecond=0)
-    hour_count = sum(1 for _, dt in today if dt >= hour_start)
+    hour_count = sum(1 for _, dt in today if dt >= hour_start) + sum(
+        1 for _, dt in uncertain_today if dt >= hour_start
+    )
     hourly_limit = effective_int("HOURLY_POST_LIMIT", 2)
     if hour_count >= hourly_limit:
         return PolicyDecision(False, f"hourly_limit:{hour_count}/{hourly_limit}")

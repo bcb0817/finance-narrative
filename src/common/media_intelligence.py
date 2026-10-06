@@ -9,21 +9,30 @@ from pathlib import Path
 
 try:
     from runtime import JST, output_dir, state_dir
-    from metrics_collector import load_snapshots
+    from metrics_collector import WINDOW_ENV, load_snapshots
 except ImportError:  # pragma: no cover
     from common.runtime import JST, output_dir, state_dir
-    from common.metrics_collector import load_snapshots
+    from common.metrics_collector import WINDOW_ENV, load_snapshots
 
 
 def rank_posts(posts: list[dict], snapshots: list[dict], *, stage="24h", count=3) -> dict:
-    hours = {"1h": 1, "6h": 6, "24h": 24}.get(stage, 24)
+    # Metrics are deliberately collected within a window before/after each nominal
+    # stage.  Treat snapshots from the configured start of that window as valid;
+    # requiring the nominal age discarded valid 24h measurements collected at 23h.
+    start_name, start_default, _end_name, _end_default = WINDOW_ENV.get(
+        stage, WINDOW_ENV["24h"]
+    )
+    try:
+        minimum_age_hours = max(0.0, float(os.getenv(start_name, start_default)) / 60.0)
+    except ValueError:
+        minimum_age_hours = float(start_default) / 60.0
     rows = []
     for post in posts:
         tweet_id = str(post.get("tweet_id", ""))
         matches = [row for row in snapshots
                    if str(row.get("tweet_id", "")) == tweet_id and row.get("stage") == stage]
         snap = max(matches, key=lambda row: str(row.get("metrics_collected_at") or ""), default=None)
-        if not snap or (hours == 24 and float(snap.get("post_age_hours") or 0) < 24):
+        if not snap or float(snap.get("post_age_hours") or 0) < minimum_age_hours:
             continue
         rows.append({**post, **snap})
     rows.sort(key=lambda r: (r.get("impressions") if r.get("impressions") is not None else -1,

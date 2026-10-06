@@ -14,7 +14,7 @@ from common.post_registry import hours_since_last_post, posting_inactive, record
 class RegistryEnrichmentTests(unittest.TestCase):
     def test_posting_inactive_uses_latest_cross_bot_post(self):
         from datetime import datetime, timedelta, timezone
-        now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone(timedelta(hours=9)))
+        now = datetime.now(timezone(timedelta(hours=9)))
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"STATE_DIR": tmp}):
             self.assertTrue(posting_inactive(3, now))
             record_post("1", text="old", bot="narrative",

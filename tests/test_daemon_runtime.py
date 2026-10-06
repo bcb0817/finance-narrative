@@ -55,5 +55,15 @@ class ChildOutputEncodingTests(unittest.TestCase):
         self.assertEqual(bot._failure_summary(stderr), "ValueError: bad input")
 
 
+class FxMonitorStatusTests(unittest.TestCase):
+    def test_license_block_is_a_safe_fx_monitor_outcome(self):
+        with patch("fx_alert.monitor.run_monitor", return_value={"status": "license_blocked"}), \
+            patch.object(bot, "log_run"):
+            result = bot.run_bot("fx-monitor")
+
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(result["error"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

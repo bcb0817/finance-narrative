@@ -156,6 +156,14 @@ def fetch_market_data(max_workers: int = 8, session: str = "open") -> pd.DataFra
     # 後からロゴを追加しやすいよう logo_url 列を空で用意しておく
     df["logo_url"] = ""
 
+    # One daily market-map fetch also refreshes the earnings priority universe.
+    # Failure here must never stop the market map itself.
+    try:
+        from common.top100_earnings import save_universe
+        save_universe(df.to_dict("records"), require_count=100)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("top100 earnings universe refresh failed: %s", type(exc).__name__)
+
     logger.info("取得成功: %d / %d 銘柄", len(df), len(universe))
     return df
 

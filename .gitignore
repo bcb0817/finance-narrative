@@ -241,3 +241,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# WordPress Radar runtime queue and generated public DTO
+data/wordpress/

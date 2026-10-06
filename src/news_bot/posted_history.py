@@ -177,8 +177,19 @@ def add_posted_entry(
     text: str = "",
 ) -> None:
     """News固有情報を共通投稿履歴へマージする。"""
-    if not _post_enabled() or not tweet_id:
-        logger.info("[INFO] POST_ENABLED=false or 未投稿のため履歴保存をスキップ")
+    if not _post_enabled():
+        logger.info("[INFO] POST_ENABLED=false のため履歴保存をスキップ")
+        return
+    if not tweet_id:
+        # The request may have reached X even if the client never received an
+        # ID.  Reserve capacity so a scheduler retry cannot breach the hourly
+        # cap or create a duplicate of that ambiguous write.
+        try:
+            from posting_policy import record_uncertain_attempt
+        except ImportError:
+            from common.posting_policy import record_uncertain_attempt
+        record_uncertain_attempt(text)
+        logger.warning("[INFO] 投稿ID未取得のため不確定投稿として上限枠を保持")
         return
 
     try:

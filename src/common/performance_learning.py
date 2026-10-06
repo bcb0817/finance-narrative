@@ -23,6 +23,17 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+# This is a product invariant, not an AI-generated suggestion. Keep it explicit in
+# every persisted strategy so the daily loop cannot drift to a proxy objective.
+PRIMARY_OPTIMIZATION_OBJECTIVE = "インプレッション最大化"
+
+
+def _fixed_objective(detail: object = "") -> str:
+    value = str(detail or "翌日のインプレッション数とimp/hを改善する").strip()
+    if value.startswith(PRIMARY_OPTIMIZATION_OBJECTIVE):
+        return _clip(value, 400)
+    return _clip(f"{PRIMARY_OPTIMIZATION_OBJECTIVE}。{value}", 400)
+
 
 def _enabled() -> bool:
     flags = (
@@ -335,6 +346,75 @@ def _empty_review() -> dict:
     }
 
 
+def _deterministic_fallback_review(
+    top_posts: list[dict],
+    bottom_posts: list[dict],
+    log_evidence: dict,
+    daily_goal: dict,
+) -> dict:
+    """Keep the daily improvement loop alive when the optional AI review fails."""
+    top = top_posts[0] if top_posts else {}
+    bottom = bottom_posts[0] if bottom_posts else {}
+    top_rate = float(top.get("impressions_per_hour") or 0)
+    bottom_rate = float(bottom.get("impressions_per_hour") or 0)
+    shortfall = max(0, int(daily_goal.get("shortfall") or 0))
+    findings = log_evidence.get("findings") or []
+    issue = str((findings[0] if findings else {}).get("category") or "none")
+    evidence = (
+        f"top imp/h={top_rate:.2f}, bottom imp/h={bottom_rate:.2f}, "
+        f"daily shortfall={shortfall}, log issue={issue}"
+    )
+    focus = [str(top.get("market_scope") or top.get("title") or "市場全体テーマ")[:180]]
+    avoid = []
+    if bottom:
+        avoid.append(
+            "下位投稿と同じ曖昧な導入を反復せず、最初の1文で市場への影響を示す"
+        )
+    if issue != "none":
+        avoid.append(f"{issue} の運用問題を無視して投稿量だけを増やさない")
+    return _normalize_review({
+        "daily_summary": (
+            "AIレビューを利用できなかったため、取得済み指標とログから安全な暫定方針を生成。"
+            f" {evidence}。翌日の結果で再評価する。"
+        ),
+        "top_posts": [],
+        "reusable_rules": [{
+            "rule": "結論を冒頭に置き、市場への影響と次の確認点を分ける",
+            "evidence": evidence,
+        }],
+        "rolling_rules": [{
+            "rule": "上位投稿のテーマをコピーせず、構造だけを次回生成へ適用する",
+            "evidence": evidence,
+        }],
+        "avoid_patterns": [{
+            "rule": item, "reason": "下位指標または運用ログに基づく暫定制約"
+        } for item in avoid],
+        "impression_strategy": {
+            "objective": (
+                f"{PRIMARY_OPTIMIZATION_OBJECTIVE}。安全ゲートを維持しつつ、"
+                "翌日のインプレッション数とimp/hを改善する"
+            ),
+            "tomorrow_focus": focus,
+            "content_rules": [{
+                "rule": "冒頭40字以内で結論、その後に理由と次の確認点を置く",
+                "evidence": evidence,
+            }],
+            "timing_rules": ["根拠不足のため既存スケジュールを維持する"],
+            "experiments": [{
+                "hypothesis": "結論先出し構成は同等テーマのimp/hを改善する",
+                "action": "安全審査を変えず、次の適格投稿1件で構成だけを適用する",
+                "success_metric": "類似投稿の24h imp/hとの比較",
+            }],
+            "avoid": avoid,
+            "confidence": "low",
+            "limitations": [
+                "AIレビュー失敗時の決定論的フォールバック",
+                "観測相関であり因果を示さない",
+            ],
+        },
+    })
+
+
 def _safe_strings(value, *, count: int, chars: int) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -396,7 +476,7 @@ def _normalize_review(review: object) -> dict:
                 "success_metric": _clip(str(item.get("success_metric") or ""), 200),
             })
     result["impression_strategy"] = {
-        "objective": _clip(str(strategy.get("objective") or ""), 400),
+        "objective": _fixed_objective(strategy.get("objective")),
         "tomorrow_focus": _safe_strings(
             strategy.get("tomorrow_focus"), count=6, chars=240),
         "content_rules": _safe_rules(strategy.get("content_rules"), count=8),
@@ -483,7 +563,7 @@ def strategy_status(now: datetime | None = None) -> dict:
         "age_hours": round(age_hours, 2) if age_hours is not None else None,
         "max_age_hours": max_age,
         "confidence": str(strategy.get("confidence") or "low"),
-        "objective": _clip(str(strategy.get("objective") or ""), 400),
+        "objective": _fixed_objective(strategy.get("objective")),
         "tomorrow_focus": _safe_strings(
             strategy.get("tomorrow_focus"), count=6, chars=240),
         "log_analysis_status": str(payload.get("log_analysis_status") or "unknown"),
@@ -620,6 +700,8 @@ def update_daily_learning(
 再利用できる投稿設計ルールを作ってください。
 
 【重要な分析姿勢】
+- 最上位かつ不変の改善目的は「インプレッション最大化」とする
+- 代理指標だけを目的化せず、最終的にインプレッション数とimp/hで評価する
 - インプレッション上位という相関だけから、因果を断定しない
 - 投稿後経過時間と impressions_per_hour も考慮する
 - ニュースの事実や投資判断を学習するのではなく、テーマ選定、冒頭のフック、
@@ -726,21 +808,27 @@ def update_daily_learning(
             "impression_strategy":strategy},
             "required":["daily_summary","top_posts","reusable_rules","rolling_rules","avoid_patterns",
                         "impression_strategy"]}
-        review = OpenAIService().structured(prompt, schema, role=OpenAIRole.ANALYZE,
-                                            operation="daily_performance_analysis")
+        review = OpenAIService().structured(
+            prompt, schema, role=OpenAIRole.ANALYZE,
+            operation="daily_performance_analysis",
+            max_tokens=max(
+                2000,
+                int(os.getenv("DAILY_LEARNING_MAX_OUTPUT_TOKENS", "4000") or 4000),
+            ),
+        )
         review = _normalize_review(review)
         status = "ok"
         error = ""
         skip_reason = ""
     except DailyLimitError:
         logger.info("日次Top3レビューをスキップ: analyze daily limit reached")
-        review = _empty_review()
+        review = _deterministic_fallback_review(raw_top, bottom, log_evidence, daily_goal)
         status = "skipped"
         error = ""
         skip_reason = "analyze_daily_limit_reached"
     except Exception as e:  # 学習失敗で日次レポート全体を止めない
         logger.exception("日次Top3レビューに失敗しました")
-        review = _empty_review()
+        review = _deterministic_fallback_review(raw_top, bottom, log_evidence, daily_goal)
         status = "analysis_error"
         error = f"{type(e).__name__}: {e}"
         skip_reason = ""
@@ -784,10 +872,14 @@ def update_daily_learning(
             "# 最新の避けるパターン\n\n" + "\n".join(
                 f"- {i.get('rule') or i.get('pattern')}" if isinstance(i, dict) else f"- {i}" for i in avoid
             ) + "\n", encoding="utf-8")
+    if review.get("impression_strategy", {}).get("objective"):
         strategy_payload = {
             "date": run_date,
             "generated_at": now.isoformat(),
-            "source": "daily_performance_analysis",
+            "source": (
+                "daily_performance_analysis"
+                if status == "ok" else "deterministic_daily_fallback"
+            ),
             "log_analysis_status": log_evidence.get("status"),
             "daily_goal": daily_goal,
             "strategy": review.get("impression_strategy") or {},
@@ -804,9 +896,6 @@ def update_daily_learning(
                     "NEWS_BUZZ_THRESHOLD",
                     "NEWS_NARRATIVE_THRESHOLD",
                     "NEWS_THEME_THRESHOLD",
-                    "DAILY_POST_LIMIT",
-                    "HOURLY_POST_LIMIT",
-                    "X_WRITE_MONTHLY_BUDGET_USD",
                     "SAFETY_REVIEW_RETRY_LIMIT",
                     "NEWS_MAX_CANDIDATES",
                     "NEWS_CANDIDATE_POOL_SIZE",
@@ -872,15 +961,18 @@ def load_learning_context(max_chars: int | None = None) -> str:
     if not _enabled():
         return ""
     path = _latest_md()
-    if not path.exists():
+    strategy = _latest_strategy_md()
+    current_status = strategy_status()
+    if not path.exists() and not (
+        current_status.get("active") and strategy.exists()
+    ):
         return ""
     try:
         sections = []
-        current_status = strategy_status()
-        strategy = _latest_strategy_md()
         if current_status.get("active") and strategy.exists():
             sections.append(strategy.read_text(encoding="utf-8").strip())
-        sections.append(path.read_text(encoding="utf-8").strip())
+        if path.exists():
+            sections.append(path.read_text(encoding="utf-8").strip())
         avoid = _latest_avoid_md()
         if avoid.exists():
             sections.append(avoid.read_text(encoding="utf-8").strip())

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from common.runtime import JST
-from common.posting_policy import check_post, policy_status
+from common.posting_policy import check_post, policy_status, record_uncertain_attempt
 
 
 class PostingPolicyTests(unittest.TestCase):
@@ -43,6 +43,24 @@ class PostingPolicyTests(unittest.TestCase):
             {"tweet_id": "1", "text": "one", "posted_at": (now - timedelta(minutes=30)).isoformat()},
             {"tweet_id": "2", "text": "two", "posted_at": (now - timedelta(minutes=10)).isoformat()},
         ])
+        self.assertTrue(check_post("three", now=now).reason.startswith("hourly_limit"))
+
+    def test_uncertain_live_attempt_consumes_hourly_capacity(self):
+        now = datetime(2026, 7, 19, 12, 40, tzinfo=JST)
+        self._write([{"tweet_id": "1", "text": "one", "posted_at": (now - timedelta(minutes=30)).isoformat()}])
+        record_uncertain_attempt("write response missing", now=now - timedelta(minutes=10))
+        self.assertTrue(check_post("three", now=now).reason.startswith("hourly_limit"))
+
+    def test_recovers_valid_history_after_malformed_entry(self):
+        now = datetime(2026, 7, 19, 12, 40, tzinfo=JST)
+        (self.state / "posted_history.json").write_text(
+            "[\n"
+            "  {\"tweet_id\": \"bad\", \"posted_at\": },\n"
+            f"  {{\"tweet_id\": \"1\", \"text\": \"one\", \"posted_at\": \"{(now - timedelta(minutes=30)).isoformat()}\"}},\n"
+            f"  {{\"tweet_id\": \"2\", \"text\": \"two\", \"posted_at\": \"{(now - timedelta(minutes=10)).isoformat()}\"}}\n"
+            "]",
+            encoding="utf-8",
+        )
         self.assertTrue(check_post("three", now=now).reason.startswith("hourly_limit"))
 
     def test_blocks_ticker_and_theme_cooldowns(self):

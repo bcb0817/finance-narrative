@@ -44,6 +44,26 @@ SEC_USER_AGENT = os.getenv(
 # group: market_news / official_macro / company_filings
 # =========================================================
 RSS_FEEDS: dict[str, dict] = {
+    # Mega-cap earnings must be observed from the issuer, not only from media
+    # feeds whose publication latency and coverage are outside our control.
+    "NVIDIA Investor Relations": {
+        "url": "https://nvidianews.nvidia.com/cats/press_release.xml",
+        "group": "company_earnings",
+        "priority": 20,
+        "critical_monitor": True,
+        "include_keywords": [
+            "financial results", "quarterly results", "earnings", "revenue",
+        ],
+    },
+    "Top100 Earnings News": {
+        "url": (
+            "https://news.google.com/rss/search?q=earnings+OR+%22quarterly+results%22+"
+            "when%3A1d&hl=en-US&gl=US&ceid=US%3Aen"
+        ),
+        "group": "company_earnings",
+        "priority": 18,
+        "top100_earnings_only": True,
+    },
     # --- 1. market_news ---
     "MarketWatch":            {"url": "https://feeds.marketwatch.com/marketwatch/topstories/",            "group": "market_news",     "priority": 5},
     "CNBC Markets":           {"url": "https://www.cnbc.com/id/15839069/device/rss/rss.html",             "group": "market_news",     "priority": 6},
@@ -100,6 +120,7 @@ GROUP_SCORE: dict[str, float] = {
     "official_regulatory": 3.0,
     "official_policy": 0.0,
     "company_filings": 3.0,
+    "company_earnings": 8.0,
     "sector_news": 1.0,
     "crypto_news": 0.5,
 }
@@ -136,6 +157,32 @@ PRIORITY_THEME_KEYWORDS: list[str] = [
 
 # 加点重み（priority + group + finance + theme）
 PRIORITY_THEME_BONUS = 3.0
+
+MARKET_CRITICAL_EARNINGS_COMPANIES: tuple[str, ...] = (
+    "nvidia", "nvda",
+)
+EARNINGS_RESULT_TERMS: tuple[str, ...] = (
+    "announces financial results", "reports financial results",
+    "announces quarterly results", "reports quarterly results",
+    "announces earnings results", "reports earnings results",
+)
+
+
+def is_market_critical_earnings(item: "NewsItem") -> bool:
+    """Identify issuer-originated mega-cap results that must reach review."""
+    text = f"{item.title} {item.source}".lower()
+    nvidia_official = (
+        item.source_group == "company_earnings"
+        and any(company in text for company in MARKET_CRITICAL_EARNINGS_COMPANIES)
+        and any(term in text for term in EARNINGS_RESULT_TERMS)
+    )
+    if nvidia_official:
+        return True
+    try:
+        from common.top100_earnings import match_top100_result
+        return match_top100_result(item.title) is not None
+    except Exception:
+        return False
 
 
 # =========================================================
@@ -305,6 +352,12 @@ def rss_status() -> dict:
 
 
 def matches_feed_filter(title: str, cfg: dict) -> bool:
+    if cfg.get("top100_earnings_only"):
+        try:
+            from common.top100_earnings import match_top100_result
+            return match_top100_result(title) is not None
+        except Exception:
+            return False
     required = [
         str(value).strip().lower()
         for value in cfg.get("include_keywords", [])
@@ -409,6 +462,23 @@ def fetch_feed(name: str, cfg: dict) -> list[NewsItem]:
             item_count=0,
             error_type=type(e).__name__,
         )
+        if cfg.get("critical_monitor"):
+            try:
+                from common.runtime import log_error
+                log_error({
+                    "bot": "news", "source": name,
+                    "category": "critical_feed_failure",
+                    "error_type": type(e).__name__, "error": str(e)[:300],
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                })
+                from common.operations_alerts import queue_discord_log
+                queue_discord_log(
+                    "critical-feed.failure",
+                    f"{name} の取得に失敗: {type(e).__name__}。NVIDIA決算監視を要確認",
+                    level="ERROR",
+                )
+            except Exception:
+                pass
 
     return items
 
@@ -451,6 +521,25 @@ def deduplicate(items: list[NewsItem], sim_threshold: float = 0.85) -> list[News
     return kept
 
 
+def deduplicate_earnings_events(items: list[NewsItem]) -> list[NewsItem]:
+    """Keep the highest-ranked source for each top-100 company result event."""
+    try:
+        from common.top100_earnings import match_top100_result
+    except Exception:
+        return items
+    seen = set()
+    result = []
+    for item in items:
+        company = match_top100_result(item.title)
+        if company:
+            key = str(company.get("ticker") or company.get("company_name") or "")
+            if key in seen:
+                continue
+            seen.add(key)
+        result.append(item)
+    return result
+
+
 def is_recent(item: NewsItem, hours: int = 24) -> bool:
     """24時間以内のニュースかチェック（日付不明は通す）"""
     if not item.published:
@@ -474,6 +563,10 @@ def score_item(item: NewsItem) -> float:
     # 優先テーマ（FRB/金利/ドル/指標/指数/半導体・AI/大型テック/決算/原油/地政学）
     if any(k in text for k in PRIORITY_THEME_KEYWORDS):
         score += PRIORITY_THEME_BONUS
+    if is_market_critical_earnings(item):
+        # Keep it ahead of broad feeds regardless of their volume. This only
+        # guarantees review; publication still passes safety and duplicate gates.
+        score += 100.0
     return score
 
 
@@ -559,11 +652,34 @@ def fetch_news_candidates(
     for name, cfg in RSS_FEEDS.items():
         all_items.extend(fetch_feed(name, cfg))
 
+    # Persist critical earnings before ranking. They remain candidates after an
+    # RSS item ages out, until the posted URL confirms successful publication.
+    try:
+        from common.top100_earnings import match_top100_result, pending_events, remember_events
+        critical = []
+        for item in all_items:
+            company = match_top100_result(item.title)
+            if company:
+                critical.append({**item.to_dict(), "ticker": company.get("ticker"),
+                                 "rank": company.get("rank")})
+        remember_events(critical)
+        known_urls = {item.url for item in all_items}
+        for row in pending_events(set(posted_urls or set())):
+            if row.get("url") and row["url"] not in known_urls:
+                all_items.append(NewsItem(
+                    title=str(row.get("title") or ""), url=str(row["url"]),
+                    source=str(row.get("source") or "Top100 Earnings Queue"),
+                    published=str(row.get("published") or ""),
+                    source_group="company_earnings", priority=20,
+                ))
+    except Exception as exc:
+        logger.error("top100 earnings queue unavailable: %s", type(exc).__name__)
+
     logger.info(f"合計取得件数: {len(all_items)}件")
 
     # スコア降順に並べてから重複排除（似タイトルは高スコア側を残す）
     all_items.sort(key=score_item, reverse=True)
-    unique_items = deduplicate(all_items)
+    unique_items = deduplicate_earnings_events(deduplicate(all_items))
     logger.info(f"重複除去後（URL+類似タイトル）: {len(unique_items)}件")
 
     available = [it for it in unique_items if it.url not in (posted_urls or set())]
