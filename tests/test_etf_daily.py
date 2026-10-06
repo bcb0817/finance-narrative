@@ -12,7 +12,7 @@ ASSETS = [
     {'symbol': symbol, 'proxy': proxy, 'excluded': symbol == '1570',
      'dataStatus': 'VALID', 'targetWeight': weight, 'decision': 'LONG',
      'expiresAt': '2026-10-05T13:30:00+00:00', 'decisionSession': '2026-10-02'}
-    for symbol, proxy, weight in [('TQQQ', 'QQQ', .232), ('SOXL', 'SOXX', .096), ('1570', '1321.T', None)]
+    for symbol, proxy, weight in [('TQQQ', 'QQQ', .232), ('SOXL', 'SOXX', .096), ('1570', '1321.T', None), ('FAS', 'XLF', .15)]
 ]
 
 
@@ -81,6 +81,6 @@ def test_one_post_per_symbol_and_day_even_after_ambiguous_response(tmp_path, mon
         assert not calls and not first['posts'] and not second['posts']
         assert all(p['reason'] == 'hourly_limit:2/2' for p in second['pending'])
         return
-    assert len(calls) == 3
-    assert len(first['posts']) == len(second['posts']) == 3
+    assert len(calls) == 4
+    assert len(first['posts']) == len(second['posts']) == 4
     assert sum(p['status'] == 'uncertain' for p in second['posts']) == int(ambiguous)

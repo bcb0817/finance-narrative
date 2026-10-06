@@ -1,4 +1,4 @@
-"""Daily ETF refresh -> verified public snapshot -> three bounded X updates.
+"""Daily ETF refresh -> verified public snapshot -> four bounded X updates.
 
 Uses the existing finance credentials and budgets; never sends Discord messages.
 Ambiguous X responses stay uncertain rather than risk posting twice.
@@ -97,7 +97,7 @@ def live_snapshot(config, generation):
         raise
     if data.get('version') != 1 or data.get('source') != 'Yahoo Finance / yfinance':
         raise ValueError('INVALID_LIVE_SNAPSHOT')
-    if sorted(a['symbol'] for a in data['assets']) != ['1570', 'SOXL', 'TQQQ']:
+    if sorted(a['symbol'] for a in data['assets']) != ['1570', 'FAS', 'SOXL', 'TQQQ']:
         raise ValueError('INVALID_LIVE_SYMBOLS')
     expected = datetime.fromisoformat(generation)
     # The public TypeScript projection serializes milliseconds; Python keeps microseconds.
@@ -129,7 +129,7 @@ def run(preview=False):
         progress_path = state_dir() / 'etf_daily_progress.json'
         progress = json.loads(progress_path.read_text(encoding='utf-8')) if progress_path.exists() else {}
         slots = json.loads(command([python, '-m', 'lab.daily', '--slots'], lab))
-        for group, symbols in [('US', ['TQQQ', 'SOXL']), ('JP', ['1570'])]:
+        for group, symbols in [('US', ['TQQQ', 'SOXL', 'FAS']), ('JP', ['1570'])]:
             if all(db.execute('SELECT status FROM posts WHERE day=? AND symbol=?', (day, symbol)).fetchone() for symbol in symbols):
                 continue
             key = day + '-' + group
@@ -192,7 +192,7 @@ def run(preview=False):
                 db.execute('BEGIN IMMEDIATE')
         db.commit()
         rows = db.execute('SELECT symbol,status,tweet_id FROM posts WHERE day=?', (day,)).fetchall()
-        status = 'attention' if any(v == 'uncertain' for _, v, _ in rows) else ('completed' if len(rows) == 3 else 'waiting')
+        status = 'attention' if any(v == 'uncertain' for _, v, _ in rows) else ('completed' if len(rows) == 4 else 'waiting')
         return {'status': status, 'day': day, 'pending': pending,
                 'posts': [{'symbol': s, 'status': v, 'tweet_id': t} for s, v, t in rows]}
     finally:

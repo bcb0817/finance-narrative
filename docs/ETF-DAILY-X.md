@@ -1,6 +1,6 @@
 # レバレッジETFの日次X更新
 
-金融Bot @singa9999 に TQQQ / SOXL / 1570 を各1回、毎日3件投稿する専用ジョブ。
+金融Bot @singa9999 に TQQQ / SOXL / FAS / 1570 を各1回、毎日4件投稿する専用ジョブ。
 既存ニュース用デーモンとは独立し、既存API認証と投稿予算・頻度制限を使う。
 
 - 米国: 前日の日本日付に対応する米国市場の引け90分後。通常6:30 JST、冬時間7:30 JST。短縮取引日は前倒し。
@@ -20,3 +20,5 @@ PCが起動し、登録ユーザーがログインしていることが必要。
 確認: `data/etf_daily_last_run.json`、`data/etf_daily_progress.json`、`data/etf_daily.sqlite`。
 プレビュー: `.venv\Scripts\python.exe scripts\etf_daily.py --preview`。
 停止: `Disable-ScheduledTask -TaskName FinanceETFSignalsDaily`。
+
+FAS追加: XLFのSMA200を参照し、2022年8月の指数変更後のデータから算出。米国3銘柄で既存の投資・露出・共分散制限を共有する。1時間2件上限のため米国3件は少なくとも2時間帯に分かれる。
