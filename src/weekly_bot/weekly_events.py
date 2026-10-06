@@ -109,6 +109,8 @@ def _fetch_earnings(frm: str, to: str) -> list[dict]:
             "source_name": "Finnhub",
             "source_url": "https://finnhub.io/calendar/earnings",
             "verified": True,
+            "evidence_excerpt": json.dumps(e, ensure_ascii=False),
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
         })
     logger.info(f"決算カレンダー: 主要 {len(out)}件（whitelist適用）")
     return out
@@ -157,6 +159,8 @@ def _fetch_economic(frm: str, to: str) -> list[dict]:
             "source_name": "Finnhub",
             "source_url": "https://finnhub.io/calendar/economic",
             "verified": True,
+            "evidence_excerpt": json.dumps(e, ensure_ascii=False),
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
         }
         # 00:00:00 や時刻なしは「時刻不明」扱い（無理に時刻を作らない）
         if hhmmss and hhmmss != "00:00:00":

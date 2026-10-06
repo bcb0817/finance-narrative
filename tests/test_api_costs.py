@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -26,7 +27,7 @@ class ApiCostTests(unittest.TestCase):
             "OPENAI_MONTHLY_BUDGET_USD": "5.0",
         }):
             Path(tmp, "api_cost_ledger.jsonl").write_text(
-                '{"ts":"2026-09-09T00:00:00+09:00","estimated_usd":4.9}\n',
+                '{"ts":"' + datetime.now().strftime('%Y-%m-%d') + 'T00:00:00+09:00","estimated_usd":4.9}\n',
                 encoding="utf-8",
             )
             with self.assertRaises(RuntimeError):
@@ -59,8 +60,8 @@ class ApiCostTests(unittest.TestCase):
     def test_excludes_other_provider_costs_from_openai_budget(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"STATE_DIR": tmp}):
             Path(tmp, "api_cost_ledger.jsonl").write_text(
-                '{"ts":"2026-09-09T00:00:00+09:00","kind":"usage","provider":"openai","estimated_usd":1.25}\n'
-                '{"ts":"2026-09-09T00:00:00+09:00","kind":"usage","provider":"xai","estimated_usd":9.75}\n',
+                ('{"ts":"DATE' + 'T00:00:00+09:00","kind":"usage","provider":"openai","estimated_usd":1.25}\n'
+                '{"ts":"DATET00:00:00+09:00","kind":"usage","provider":"xai","estimated_usd":9.75}\n').replace('DATE', datetime.now().strftime('%Y-%m-%d')),
                 encoding="utf-8",
             )
             self.assertAlmostEqual(monthly_openai_cost(), 1.25)

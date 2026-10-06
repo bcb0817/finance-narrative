@@ -25,6 +25,8 @@ def review(*, ok: bool, risk: str = "low", advice: bool = False) -> dict:
     }
 
 
+# Explicit rollback coverage; editorial-v2 expectations live in test_editorial_policy.
+@patch.dict(os.environ, {'EDITORIAL_POLICY_ENABLED': 'false'})
 class AdaptiveSafetyReviewTests(unittest.TestCase):
     def _policy(self, root: Path, retry_limit: int) -> None:
         folder = root / "learning"

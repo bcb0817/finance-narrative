@@ -10,6 +10,8 @@ from common import daily_post_goal as goal
 from common.dynamic_posting import posting_window
 
 
+# Explicit rollback coverage; editorial-v2 expectations live in test_editorial_policy.
+@patch.dict(os.environ, {'EDITORIAL_POLICY_ENABLED': 'false'})
 class DailyPostGoalTests(unittest.TestCase):
     def _write_posts(self, root: Path, now: datetime, count: int) -> None:
         rows = [

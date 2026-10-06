@@ -171,6 +171,10 @@ def record_openai_usage(response, model: str, *, reservation_id: str | None = No
         "output_tokens": output_tokens,
         "estimated_usd": round(estimated, 8),
     }
+    from common.editorial import TRACE
+    if TRACE.get():
+        record['editorial_decision_id'] = TRACE.get()
+        record['cost_basis'] = 'local_token_price_estimate_not_invoice'
     _append_record(record)
 
 

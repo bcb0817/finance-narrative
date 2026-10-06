@@ -243,3 +243,6 @@ __marimo__/
 .streamlit/secrets.toml
 # WordPress Radar runtime queue and generated public DTO
 data/wordpress/
+
+# Local production-history snapshot and offline review outputs, never deployed.
+/review_data/

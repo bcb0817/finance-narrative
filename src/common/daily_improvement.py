@@ -83,6 +83,11 @@ def _category(exc: BaseException) -> str:
 
 def run_daily_improvement(*, force: bool = False, now: datetime | None = None) -> dict:
     """Execute and verify the loop once daily; retry only safe recovery actions."""
+    from common.editorial_policy import enabled
+    if enabled():
+        from common.editorial_metrics import daily_review
+        from common.daily_log_analysis import analyze_daily_logs
+        return {**daily_review(), 'log_analysis': analyze_daily_logs(now=now, force=force), 'x_post_called': False}
     from common.daily_log_analysis import analyze_daily_logs
     from common.performance_learning import (
         PRIMARY_OPTIMIZATION_OBJECTIVE, strategy_status, update_daily_learning,

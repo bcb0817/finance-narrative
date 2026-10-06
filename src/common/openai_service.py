@@ -60,6 +60,13 @@ def _record_usage(*, role: OpenAIRole, model: str, endpoint: str, started: float
            "latency_ms": round((time.perf_counter()-started)*1000), "success": success,
            "fallback_used": fallback, "error_type": error, "operation_name": operation}
     _openai_dir(create=True)
+    from common.editorial import TRACE
+    if TRACE.get():
+        row['editorial_decision_id'] = TRACE.get()
+        row['usage_available'] = usage is not None
+        if usage is None:
+            for key in ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_tokens'):
+                row[key] = None
     with usage_path().open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 

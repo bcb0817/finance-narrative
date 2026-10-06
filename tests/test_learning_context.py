@@ -11,6 +11,8 @@ sys.path.insert(0, str(ROOT / "src" / "common"))
 import performance_learning as pl
 
 
+# Explicit rollback coverage; editorial-v2 expectations live in test_editorial_policy.
+@patch.dict(os.environ, {'EDITORIAL_POLICY_ENABLED': 'false'})
 class LearningContextTests(unittest.TestCase):
     def test_patterns_are_inserted_into_prompt(self):
         with patch.object(pl, "load_learning_context", return_value="- 結論を先に置く"):

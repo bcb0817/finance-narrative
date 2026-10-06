@@ -177,6 +177,28 @@ def check_post(text: str, *, now: datetime | None = None) -> PolicyDecision:
 def policy_status(*, now: datetime | None = None) -> dict:
     from common.daily_post_goal import effective_float, effective_int
     now = now or datetime.now(JST)
+    from common.editorial_policy import enabled
+    if enabled():
+        from common.editorial import history, budget_ok
+        from common.editorial_delivery import outstanding, capacity_reason
+        rows = history()
+        pending = outstanding(rows)
+        dated = [(r, _posted_at(r).astimezone(JST)) for r in rows + pending]
+        today = [r for r, t in dated if t.date() == now.date()]
+        month_count = sum(t.year == now.year and t.month == now.month for _, t in dated)
+        return {'policy': 'editorial_v2', 'target': None, 'today_count': len(today),
+                'month_count': month_count,
+                'estimated_x_write_usd': round(month_count * _env_float('X_CONTENT_CREATE_USD', .015), 4),
+                'hour_count': sum(now - timedelta(hours=1) < t <= now for _, t in dated),
+                'normal_count': sum(not r.get('editorial', {}).get('important_update', False) for r in today),
+                'daily_limit': effective_int('DAILY_POST_LIMIT', 10),
+                'normal_daily_limit': max(0, min(6, _env_int('EDITORIAL_NORMAL_DAILY_LIMIT', 6))),
+                'hourly_limit': effective_int('HOURLY_POST_LIMIT', 2), 'hour_window': 'rolling_60_minutes',
+                'normal_min_gap_minutes': max(30, _env_int('EDITORIAL_NORMAL_GAP_MINUTES', 30)),
+                'normal_block_reason': capacity_reason(rows, pending, now),
+                'breaking_block_reason': capacity_reason(rows, pending, now, breaking=True),
+                'openai_budget_stopped': not budget_ok(),
+                'monthly_write_budget_usd': effective_float('X_WRITE_MONTHLY_BUDGET_USD', 15.0)}
     dated = [(entry, _posted_at(entry)) for entry in _history()]
     dates = [dt.astimezone(JST) for _entry, dt in dated if dt is not None]
     today_count = sum(1 for dt in dates if dt.date() == now.date())

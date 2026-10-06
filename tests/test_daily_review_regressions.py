@@ -15,6 +15,8 @@ from common import daily_post_goal
 from market_map import generate_market_map_post
 
 
+# Explicit rollback coverage; editorial-v2 expectations live in test_editorial_policy.
+@patch.dict(os.environ, {'EDITORIAL_POLICY_ENABLED': 'false'})
 class DailyReviewRegressionTests(unittest.TestCase):
     def test_legacy_minimal_reasoning_is_sent_as_low(self):
         client = Mock()

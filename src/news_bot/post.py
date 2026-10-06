@@ -891,6 +891,11 @@ def main(mode: str = "image") -> None:
         posted_urls=posted_urls,
         limit=candidate_pool_size,
     )
+    from common.editorial_policy import enabled as editorial_enabled
+    if editorial_enabled():
+        from common.editorial import publish_candidates
+        publish_candidates(candidates, bot='news', dry_run=DRY_RUN)
+        return
     if not candidates:
         logger.error("ニュース取得失敗")
         _news_log(selected_post_type=mode, skip_reason="no_news", should_post=False)

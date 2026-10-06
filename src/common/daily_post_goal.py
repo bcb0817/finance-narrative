@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from common.runtime import JST, state_dir
+from common.editorial_policy import enabled as editorial_enabled
 
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -73,6 +74,8 @@ PROTECTED_CONTROLS = (
 
 
 def daily_target() -> int:
+    if editorial_enabled():
+        return 0
     try:
         return max(1, int(os.getenv("DAILY_POST_TARGET", "20") or 20))
     except ValueError:
@@ -155,6 +158,8 @@ def expected_post_count(now: datetime | None = None) -> int:
 
 
 def catch_up_runs(now: datetime | None = None) -> int:
+    if editorial_enabled():
+        return 0
     """Return bounded extra news runs needed to recover today's target pace."""
     current = (now or datetime.now(JST)).astimezone(JST)
     if os.getenv("DAILY_GOAL_CATCH_UP_ENABLED", "true").lower() not in TRUE_VALUES:
@@ -170,6 +175,8 @@ def catch_up_runs(now: datetime | None = None) -> int:
 
 
 def _current_values() -> dict[str, float]:
+    if editorial_enabled():
+        return {name: float(os.getenv(name, '') or default) for name, default in TUNABLE_DEFAULTS.items()}
     stored = _read_json(_policy_path(), {})
     values = stored.get("effective_values", {}) if isinstance(stored, dict) else {}
     result: dict[str, float] = {}
@@ -184,6 +191,15 @@ def _current_values() -> dict[str, float]:
 
 def effective_int(name: str, default: int) -> int:
     """Read a runtime value, allowing only the explicit volume-tuning list."""
+    if editorial_enabled():
+        if name in ('DAILY_POST_LIMIT', 'HOURLY_POST_LIMIT'):
+            maximum = 10 if name == 'DAILY_POST_LIMIT' else 2
+            return max(0, min(maximum, int(os.getenv(name, '') or maximum)))
+        if name == 'DAILY_GOAL_MAX_EXTRA_NEWS_RUNS': return 0
+        if name == 'NEWS_IDLE_FALLBACK_HOURS': return 0
+        if name == 'SAFETY_REVIEW_RETRY_LIMIT': return 0
+        if name in TUNABLE_DEFAULTS:
+            return int(float(os.getenv(name, '') or TUNABLE_DEFAULTS[name]))
     if name in FIXED_GUARDRAILS:
         try:
             configured = int(os.getenv(name, "") or FIXED_GUARDRAILS[name])
@@ -220,6 +236,8 @@ def _runtime_bounds(name: str) -> tuple[float, float]:
 
 def run_intraday_monitor(now: datetime | None = None) -> dict[str, Any]:
     """Monitor the 20-post pace once per three-hour JST window and act."""
+    if editorial_enabled():
+        return {'status': 'quality_only', 'extra_news_runs': 0, 'actions': [], 'program_adjustment': {'status': 'disabled'}}
     current = (now or datetime.now(JST)).astimezone(JST)
     target = daily_target()
     completed = post_count(current.date())
@@ -336,6 +354,8 @@ def _reviewed_days() -> set[str]:
 
 
 def _apply_missed_day_tuning(completed_day: date, shortfall: int) -> dict[str, Any]:
+    if editorial_enabled():
+        return {'status': 'disabled', 'changed': {}}
     enabled = os.getenv("DAILY_GOAL_AUTO_TUNE_ENABLED", "true").lower() in TRUE_VALUES
     before = _current_values()
     after = dict(before)
@@ -374,6 +394,9 @@ def _apply_missed_day_tuning(completed_day: date, shortfall: int) -> dict[str, A
 def review_daily_goal(
     *, now: datetime | None = None, apply_adjustment: bool = True
 ) -> dict[str, Any]:
+    if editorial_enabled():
+        return {'status': 'quality_only', 'target': None, 'shortfall': 0, 'quality_gates_relaxed': False,
+                'post_limits_changed': False, 'budgets_changed': False, 'program_adjustment': {'status': 'disabled'}}
     current = (now or datetime.now(JST)).astimezone(JST)
     target = daily_target()
     completed_day = current.date() - timedelta(days=1)
@@ -423,6 +446,8 @@ def review_daily_goal(
 
 
 def goal_status(now: datetime | None = None) -> dict[str, Any]:
+    if editorial_enabled():
+        return {**review_daily_goal(now=now), 'auto_tune_enabled': False, 'normal_limit': 6, 'total_limit': 10}
     result = review_daily_goal(now=now, apply_adjustment=False)
     active_policy = _read_json(_policy_path(), {})
     effective = _current_values()
