@@ -17,6 +17,12 @@ ASSETS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def legacy_daily_contract(monkeypatch):
+    # Retain rollback tests; recovery/log-only behavior is tested separately.
+    monkeypatch.setenv('SINGA_QUALITY_POLICY_ENABLED', 'false')
+
+
 def test_post_text_preserves_direction_and_cannot_be_a_personal_order():
     now = datetime(2026, 10, 5, 4, tzinfo=timezone.utc)
     for asset in ASSETS:

@@ -10,6 +10,10 @@ from common.runtime import JST, state_dir, post_enabled
 
 
 def capacity_reason(history, reservations, now, *, breaking=False):
+    from common import distribution_quality as quality
+    if quality.enabled():
+        if reason := quality.capacity(history + reservations, now):
+            return reason
     from common.daily_post_goal import effective_int
     daily = effective_int('DAILY_POST_LIMIT', 10)
     hourly = effective_int('HOURLY_POST_LIMIT', 2)
@@ -73,7 +77,13 @@ def outstanding(history):
             row = json.loads(line)  # Corrupt state must block, never reset counts.
             latest[row['reservation']] = row
     ids = {str(r.get('tweet_id')) for r in history}
-    return [r for r in latest.values() if r.get('tweet_id') not in ids]
+    pending = [r for r in latest.values() if r.get('tweet_id') not in ids]
+    legacy = state_dir() / 'uncertain_post_attempts.jsonl'
+    if legacy.exists():
+        for line in legacy.read_text(encoding='utf-8').splitlines():
+            r = json.loads(line)
+            pending.append({**r, 'posted_at': r['attempted_at']})
+    return pending
 
 
 def publish(text, image_path=None):
@@ -92,6 +102,8 @@ def publish(text, image_path=None):
             now = datetime.now(JST)
             if now - datetime.fromisoformat(packet['approved_at']) > timedelta(minutes=15):
                 raise ValueError('editorial_permit_expired')
+            if packet.get('signal_expires_at') and datetime.fromisoformat(packet['signal_expires_at']) <= now:
+                raise ValueError('signal_expired_before_delivery')
             if not budget_ok():
                 raise ValueError('openai_budget_stop')
             safety_check(text)
@@ -106,6 +118,14 @@ def publish(text, image_path=None):
             reason = capacity_reason(rows, pending, now, breaking=packet['important_update'])
             if reason:
                 raise ValueError(reason)
+            from common import distribution_quality as quality
+            if quality.enabled():
+                if not packet.get('recovery_quality_checked'):
+                    raise ValueError('recovery_quality_permit_required')
+                reason = quality.capacity(rows + pending, now, ticker=packet['brief'].get('ticker', ''),
+                    image=bool(image_path), signal=packet['bot'] == 'etf-signal')
+                if reason:
+                    raise ValueError(reason)
             if any(r.get('editorial', {}).get('fact_id') == packet['fact_id'] for r in rows + pending):
                 raise ValueError('same_fact')
             if packet.get('history_fingerprint') != digest(json.dumps(rows, ensure_ascii=False, sort_keys=True)):
@@ -118,6 +138,8 @@ def publish(text, image_path=None):
             row = {'reservation': uuid.uuid4().hex, 'posted_at': now.isoformat(), 'text': text,
                    'editorial': packet, 'status': 'pending'}
             append(row)
+            if quality.enabled():
+                quality.start(now)
             # Timeout/unknown outcome retains reservation. Never retry blindly.
             media_ids = None
             if image_path:
@@ -131,7 +153,7 @@ def publish(text, image_path=None):
             append({**row, 'tweet_id': tid, 'status': 'posted'})
             record_post(tid, text=text, bot=packet['bot'], mode='editorial',
                         source=packet['sources'][0]['source'], url=packet['sources'][0]['url'],
-                        extra={'editorial': packet, 'has_media': bool(image_path), 'with_image': bool(image_path),
+                        extra={'editorial': packet, 'symbol': packet['brief'].get('ticker', ''), 'has_media': bool(image_path), 'with_image': bool(image_path),
                                'image_type': packet['brief'].get('image_kind', 'none') if image_path else None,
                                'post_type': 'breaking_news' if packet['important_update'] else 'explanation'}, notify_discord=False)
             return tid

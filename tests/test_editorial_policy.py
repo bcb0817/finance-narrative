@@ -33,7 +33,7 @@ class EditorialTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.env = patch.dict(os.environ, {'STATE_DIR': self.temp.name, 'OUTPUT_DIR': self.temp.name,
-                'POST_ENABLED': 'true', 'EDITORIAL_POLICY_ENABLED': 'true',
+                'POST_ENABLED': 'true', 'EDITORIAL_POLICY_ENABLED': 'true', 'SINGA_QUALITY_POLICY_ENABLED': 'false',
                 'OPENAI_MONTHLY_BUDGET_USD': '5', 'X_WRITE_MONTHLY_BUDGET_USD': '15',
                 'DISCORD_ALERTS_ENABLED': 'false'})
         self.env.start(); self.addCleanup(self.env.stop)

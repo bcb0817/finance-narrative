@@ -49,5 +49,10 @@ def daily_review():
     path = root / 'metrics_snapshots.jsonl'
     snapshots = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []
     result = {'status': 'quality_only', 'target': None, 'automatic_actions': [], **summarize(posts, snapshots)}
+    from common import distribution_quality as quality
+    if quality.enabled():
+        from datetime import datetime
+        from common.runtime import JST
+        result['distribution_recovery'] = quality.recovery_review(posts, datetime.now(JST))
     (root / 'editorial_metrics_review.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     return result

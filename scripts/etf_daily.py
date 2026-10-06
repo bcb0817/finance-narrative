@@ -122,6 +122,10 @@ def run(preview=False):
     python = lab / '.venv/Scripts/python.exe'
     if preview:
         data = json.loads((Path(config['site_root']) / 'src/data/etf-signals.json').read_text(encoding='utf-8'))
+        from common.distribution_quality import enabled
+        if enabled():
+            from common.signal_queue import observe
+            return {'status': 'preview', 'posts': [], 'decisions': observe(data, now, preview=True)}
         return {'status': 'preview', 'posts': [render(a, now) for a in data['assets']]}
     if not config['enabled'] or not post_enabled():
         return {'status': 'disabled'}
@@ -135,7 +139,8 @@ def run(preview=False):
         progress = json.loads(progress_path.read_text(encoding='utf-8')) if progress_path.exists() else {}
         slots = json.loads(command([python, '-m', 'lab.daily', '--slots'], lab))
         for group, symbols in [('US', ['TQQQ', 'SOXL', 'FAS', 'SQQQ', 'SOXS', 'FAZ']), ('JP', ['1570'])]:
-            if all(db.execute('SELECT status FROM posts WHERE day=? AND symbol=?', (day, symbol)).fetchone() for symbol in symbols):
+            from common.distribution_quality import enabled as quality_enabled
+            if not quality_enabled() and all(db.execute('SELECT status FROM posts WHERE day=? AND symbol=?', (day, symbol)).fetchone() for symbol in symbols):
                 continue
             key = day + '-' + group
             if now < datetime.fromisoformat(slots[group]['due']):
@@ -159,6 +164,11 @@ def run(preview=False):
             if data is None:
                 pending.append({'group': group, 'reason': 'WAITING_FOR_PUBLICATION'})
                 continue
+            if quality_enabled():
+                from common.signal_queue import observe
+                selected = {**data, 'assets': [a for a in data['assets'] if a['symbol'] in symbols]}
+                pending.extend(observe(selected, now, holiday=progress[key]['holiday']))
+                continue  # No X client, account lookup or create_tweet in the daily batch.
             from common.x_client import get_tweepy_client
             from common.posting_policy import check_post
             from common.post_registry import record_post
@@ -197,6 +207,8 @@ def run(preview=False):
                 db.execute('BEGIN IMMEDIATE')
         db.commit()
         rows = db.execute('SELECT symbol,status,tweet_id FROM posts WHERE day=?', (day,)).fetchall()
+        if quality_enabled():
+            return {'status': 'internal_logged', 'day': day, 'decisions': pending, 'posts': []}
         status = 'attention' if any(v == 'uncertain' for _, v, _ in rows) else ('completed' if len(rows) == 7 else 'waiting')
         return {'status': status, 'day': day, 'pending': pending,
                 'posts': [{'symbol': s, 'status': v, 'tweet_id': t} for s, v, t in rows]}

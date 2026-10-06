@@ -894,6 +894,10 @@ def main(mode: str = "image") -> None:
     from common.editorial_policy import enabled as editorial_enabled
     if editorial_enabled():
         from common.editorial import publish_candidates
+        from common.distribution_quality import enabled as quality_enabled
+        if quality_enabled():
+            from common.signal_queue import pending
+            candidates = pending() + list(candidates)
         publish_candidates(candidates, bot='news', dry_run=DRY_RUN)
         return
     if not candidates:
