@@ -99,7 +99,10 @@ def live_snapshot(config, generation):
         raise
     if data.get('version') != 1 or data.get('source') != 'Yahoo Finance / yfinance':
         raise ValueError('INVALID_LIVE_SNAPSHOT')
-    if sorted(a['symbol'] for a in data['assets']) != ['1570', 'FAS', 'FAZ', 'SOXL', 'SOXS', 'SQQQ', 'TQQQ']:
+    symbols = sorted(a['symbol'] for a in data['assets'])
+    if symbols in (['1570', 'SOXL', 'TQQQ'], ['1570', 'FAS', 'SOXL', 'TQQQ']):
+        return None  # Previous deployment is still live during the seven-ETF migration.
+    if symbols != ['1570', 'FAS', 'FAZ', 'SOXL', 'SOXS', 'SQQQ', 'TQQQ']:
         raise ValueError('INVALID_LIVE_SYMBOLS')
     expected = datetime.fromisoformat(generation)
     # The public TypeScript projection serializes milliseconds; Python keeps microseconds.
