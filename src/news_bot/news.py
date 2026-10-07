@@ -243,6 +243,8 @@ class NewsItem:
     category: str = ""   # 後方互換（source_group と同じ値が入る）
     excerpt: str = ""
     retrieved_at: str = ""
+    collection_item_id: str = ""
+    collection_event_id: str = ""
 
     def __post_init__(self):
         # 旧コードの category 互換: 未指定なら source_group を入れる
@@ -260,6 +262,8 @@ class NewsItem:
             "priority": self.priority,
             "excerpt": self.excerpt,
             "retrieved_at": self.retrieved_at,
+            "collection_item_id": self.collection_item_id,
+            "collection_event_id": self.collection_event_id,
         }
 
 
@@ -300,7 +304,7 @@ def _record_rss_health(
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     values = _load_rss_health()
     previous = values.get(name, {}) if isinstance(values.get(name), dict) else {}
-    usable = status in {"ok", "degraded"} and item_count > 0
+    usable = status in {"ok", "degraded", "empty_feed", "no_new_items", "not_modified"} and not parse_warning
     values[name] = {
         "status": status,
         "checked_at": current.isoformat(),
@@ -657,6 +661,11 @@ def fetch_news_candidates(
     """全フィードから取得し、スコア上位の候補を limit 件返す。
     呼び出し側は先頭から順に評価し、評価済み(evaluated_history)なら次候補へ進める。
     """
+    from common.collection import enabled as collection_enabled
+    if collection_enabled():
+        from common.collection_feeds import collect_all, candidates
+        collect_all()
+        return candidates(limit)
     if posted_urls is None:
         from posted_history import get_posted_urls
         posted_urls = get_posted_urls()

@@ -121,7 +121,9 @@ def source_from_item(item):
             'image_public_allowed': get('image_public_allowed', False),
             'is_primary': get('is_primary', primary),
             'provider_lineage': get('provider_lineage', []) or get('publication_provider_lineage', []),
-            'visual_points': get('visual_points', [])}
+            'visual_points': get('visual_points', []),
+            'collection_item_id': get('collection_item_id', ''),
+            'collection_event_id': get('collection_event_id', '')}
 
 
 @traced
@@ -136,6 +138,13 @@ def prepare(sources, *, service=None, bot='news', contract=None, last_posts=None
     def stop(reason, **extra):
         audit(bot=bot, decision='skip', reason=reason, sources=sources, **extra)
         return None
+    from common import collection
+    if collection.enabled():
+        # Rights are resolved from the operator-controlled registry, not LLM or caller flags.
+        sources, collection_reason = collection.public_evidence(sources)
+        if collection_reason:
+            collection.record_gate('before_public_llm', collection_reason)
+            return stop('collection:' + collection_reason)
     if not budget_ok():
         return stop('openai_budget_stop')
     if reason := capacity_reason(recent, [], datetime.now(JST), breaking=True):
@@ -167,7 +176,7 @@ def prepare(sources, *, service=None, bot='news', contract=None, last_posts=None
         '同イベントの言い換えと新事実のない解釈はduplicate=true。重要続報のみimportant_update=true。'
         'event_idとfact_idは同義の既存事実では既存IDを再利用。evidence_quoteはsource_indexの原文をそのまま引用。'
         '情報不足はaccept=false。image_kindはnone/compare/timeline/conditions/relation。本文再掲だけならnone。'
-        'event_typeはprice_move/earnings_calendar/regulation/ipo/otherの一つ。tickerは単一銘柄または空文字。'
+        'event_typeはprice_move/earnings_calendar/earnings_result/regulation/ipo/economic_indicator/monetary_policy/otherの一つ。tickerは単一銘柄または空文字。'
         'directionは買い/売り/中立/保留。市場ニュースでは中立、シグナルのcontractがある場合だけ根拠どおりに保持。'
         '同テーマの連続は新事実の重要性がある場合だけ採用。changeが空なら重要続報ではない。'
         'period_basis=source_publication_timeは資料の公開日であって数値の対象期間ではない。取り違えない。'
@@ -254,6 +263,9 @@ def prepare(sources, *, service=None, bot='news', contract=None, last_posts=None
               'evidence_fingerprint': fingerprint, 'fact_id': brief['fact_id'], 'event_id': brief['event_id'],
               'important_update': brief['important_update'], 'approved_at': datetime.now(JST).isoformat(),
               'body_hash': digest(body), 'image_hash': None}
+    if collection.enabled():
+        packet['collection_item_ids'] = [s['collection_item_id'] for s in sources]
+        packet['collection_event_ids'] = [s['collection_event_id'] for s in sources]
     from common.editorial_visual import prepare_visual
     if quality.enabled() and quality.capacity(recent, datetime.now(JST), image=True):
         packet.update(image_path=None, image_hash=None, image_reason='recovery_image_share_limit')

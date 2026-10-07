@@ -34,6 +34,10 @@ class MarketQuote:
     delay_seconds: float = 0.0
     session: str = "unknown"
     data_quality: str = "good"
+    currency: str | None = None
+    unit: str | None = None
+    adjustment: str | None = None
+    fetched_at: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", normalize_symbol(self.symbol))
@@ -49,6 +53,7 @@ class MarketQuote:
         row = asdict(self)
         row["source_timestamp"] = self.source_timestamp.isoformat()
         row["received_at"] = self.received_at.isoformat()
+        row['fetched_at'] = self.fetched_at.isoformat() if self.fetched_at else None
         row["mid"] = self.mid
         return row
 
@@ -67,6 +72,11 @@ class MarketBar:
     session: str = "unknown"
     complete: bool = True
     data_quality: str = "good"
+    received_at: datetime | None = None
+    currency: str | None = None
+    unit: str | None = None
+    adjustment: str | None = None
+    fetched_at: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", normalize_symbol(self.symbol))
@@ -74,12 +84,18 @@ class MarketBar:
     def to_dict(self) -> dict[str, Any]:
         row = asdict(self)
         row["timestamp"] = self.timestamp.isoformat()
+        row['received_at'] = self.received_at.isoformat() if self.received_at else None
+        row['fetched_at'] = self.fetched_at.isoformat() if self.fetched_at else None
         return row
 
     @classmethod
     def from_dict(cls, row: dict[str, Any]) -> "MarketBar":
         values = dict(row)
         values["timestamp"] = datetime.fromisoformat(str(values["timestamp"]))
+        if values.get('received_at'):
+            values['received_at'] = datetime.fromisoformat(values['received_at'])
+        if values.get('fetched_at'):
+            values['fetched_at'] = datetime.fromisoformat(values['fetched_at'])
         return cls(**values)
 
 

@@ -3,6 +3,9 @@ import os
 
 
 def enabled():
+    from common.collection import enabled as collection_enabled
+    if collection_enabled():
+        return True
     return os.getenv('EDITORIAL_POLICY_ENABLED', 'true').lower() in ('true', '1', 'yes')
 
 

@@ -1,4 +1,5 @@
 {
+  "collection": {"enabled": true, "type": "interval_minutes", "every_minutes": 5},
   "news": {
     "enabled": true,
     "type": "interval_minutes",

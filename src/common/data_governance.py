@@ -88,6 +88,10 @@ def publication_decision(
     status = DisplayStatus(rights["status"])
     internal = audience.strip().lower() == "internal"
     if internal:
+        from common.collection import market_internal_reason
+        reason = market_internal_reason('market_data')
+        if reason:
+            return PublicationDecision(False, reason, status.value, False, False, False)
         return PublicationDecision(
             True, "internal_analysis_allowed", status.value,
             bool(rights["public_chart_allowed"]), bool(rights["public_numeric_data_allowed"]),

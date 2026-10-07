@@ -106,6 +106,12 @@ def publish(text, image_path=None):
                 raise ValueError('signal_expired_before_delivery')
             if not budget_ok():
                 raise ValueError('openai_budget_stop')
+            from common import collection
+            if collection.enabled():
+                _, reason = collection.public_evidence(packet['sources'], now=now)
+                if reason:
+                    collection.record_gate('before_x_post', reason)
+                    raise ValueError('collection:' + reason)
             safety_check(text)
             if 'http://' in text or 'https://' in text:
                 raise ValueError('url_not_allowed')
@@ -156,6 +162,11 @@ def publish(text, image_path=None):
                         extra={'editorial': packet, 'symbol': packet['brief'].get('ticker', ''), 'has_media': bool(image_path), 'with_image': bool(image_path),
                                'image_type': packet['brief'].get('image_kind', 'none') if image_path else None,
                                'post_type': 'breaking_news' if packet['important_update'] else 'explanation'}, notify_discord=False)
+            if collection.enabled():
+                with collection.database() as db:
+                    for source in packet['sources']:
+                        db.execute('INSERT OR IGNORE INTO publications VALUES(?,?,?)',
+                            (tid + ':' + source['collection_item_id'], source['collection_event_id'], source['collection_item_id']))
             return tid
     except Exception as exc:
         audit(decision_id=packet.get('decision_id'), decision='blocked_or_unknown', reason=type(exc).__name__, detail=str(exc) if isinstance(exc, ValueError) else 'see publication journal')

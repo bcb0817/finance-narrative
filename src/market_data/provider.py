@@ -42,6 +42,9 @@ class TwelveDataMarketProvider(TwelveDataProvider):
         credits: int,
         cache_seconds: int = 0,
     ) -> dict[str, Any]:
+        from common.collection import market_internal_reason
+        if reason := market_internal_reason('market_data'):
+            raise MarketDataUnavailable(reason)
         if not self.api_key:
             raise MarketDataUnavailable("TWELVE_DATA_API_KEY is not configured")
         key = self._cache_key(endpoint, params)
@@ -80,6 +83,7 @@ class TwelveDataMarketProvider(TwelveDataProvider):
                 message = value.get("message", "provider response error") if isinstance(value, dict) else "invalid response"
                 raise MarketDataUnavailable(str(message))
             reported = response.headers.get("api-credits-used")
+            value['_collector_fetched_at'] = datetime.now(timezone.utc).isoformat()
             append_jsonl("provider_usage.jsonl", {
                 "timestamp": timestamp.isoformat(), "provider": "twelvedata",
                 "endpoint": endpoint,
@@ -125,11 +129,15 @@ class TwelveDataMarketProvider(TwelveDataProvider):
         )
         now = datetime.now(timezone.utc)
         raw_timestamp = value.get("timestamp")
+        if not raw_timestamp:
+            raise MarketDataUnavailable('quote source timestamp missing')
         source_time = (
             datetime.fromtimestamp(float(raw_timestamp), timezone.utc)
             if raw_timestamp else now
         )
         delay = max(0.0, (now - source_time).total_seconds())
+        if source_time > now:
+            raise MarketDataUnavailable('quote source timestamp is in the future')
         quality = "good"
         if delay > int(os.getenv("MARKET_DATA_STALE_SECONDS", "300") or 300):
             quality = "delayed" if delay < 86400 else "rejected"
@@ -143,7 +151,9 @@ class TwelveDataMarketProvider(TwelveDataProvider):
             ask=float(value["ask"]) if value.get("ask") is not None else None,
             volume=float(value["volume"]) if value.get("volume") not in (None, "") else None,
             source_timestamp=source_time, received_at=now, delay_seconds=delay,
-            session=str(value.get("is_market_open") or "unknown"), data_quality=quality,
+            session='open' if value.get('is_market_open') is True else 'closed' if value.get('is_market_open') is False else 'unknown', data_quality=quality,
+            currency=value.get('currency'), unit=None, adjustment=None,
+            fetched_at=datetime.fromisoformat(value['_collector_fetched_at']) if value.get('_collector_fetched_at') else None,
         )
         append_jsonl("quotes.jsonl", quote.to_dict())
         atomic_json(market_data_dir() / "last_market_data.json", {
@@ -179,7 +189,9 @@ class TwelveDataMarketProvider(TwelveDataProvider):
                 low=float(row["low"]), close=float(row["close"]),
                 volume=float(row["volume"]) if row.get("volume") not in (None, "") else None,
                 timestamp=when, source="twelvedata",
-                session="regular", data_quality="good",
+                session="unknown", data_quality="good",
+                received_at=datetime.now(timezone.utc), currency=(value.get('meta') or {}).get('currency'),
+                fetched_at=datetime.fromisoformat(value['_collector_fetched_at']) if value.get('_collector_fetched_at') else None,
             ))
         ordered = sorted(result, key=lambda item: item.timestamp)
         if ordered:

@@ -20,6 +20,8 @@ def aggregate_bars(bars: list[MarketBar], *, minutes: int) -> list[MarketBar]:
         buckets.setdefault(bucket, []).append(bar)
     result = []
     for timestamp, rows in sorted(buckets.items()):
+        if len({(r.symbol,r.currency,r.unit,r.adjustment) for r in rows}) > 1:
+            raise ValueError('mixed market units, symbols or adjustment basis')
         volumes = [row.volume for row in rows if row.volume is not None]
         result.append(MarketBar(
             symbol=rows[0].symbol, interval=f"{minutes}min",
@@ -27,6 +29,9 @@ def aggregate_bars(bars: list[MarketBar], *, minutes: int) -> list[MarketBar]:
             low=min(row.low for row in rows), close=rows[-1].close,
             volume=sum(volumes) if volumes else None, timestamp=timestamp,
             source=rows[0].source, session=rows[0].session,
+            currency=rows[0].currency, unit=rows[0].unit, adjustment=rows[0].adjustment,
+            received_at=max((r.received_at for r in rows if r.received_at),default=None),
+            fetched_at=max((r.fetched_at for r in rows if r.fetched_at),default=None),
             complete=len(rows) == minutes,
             data_quality=(
                 "good" if all(row.data_quality == "good" for row in rows)

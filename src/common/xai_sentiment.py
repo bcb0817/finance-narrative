@@ -197,6 +197,10 @@ def analyze_x_sentiment(
     client: Any = None,
 ) -> dict[str, Any] | None:
     """Return one X sentiment estimate, or ``None`` on any optional-layer failure."""
+    from common.collection import enabled
+    if enabled():
+        # Paid searches must use event-led reservations, not this fail-open path.
+        return None
     load_env()
     topic = " ".join(str(topic or "").split())
     if not topic:

@@ -65,10 +65,11 @@ except Exception:
 
 BOTS = ("news", "narrative", "market-map", "weekly")
 SCHED_BOTS = BOTS + (
-    "metrics", "report", "daily-improvement", "radar", "fx-monitor", "market-data", "goal-monitor", "blog-social"
+    "metrics", "report", "daily-improvement", "radar", "fx-monitor", "market-data", "goal-monitor", "blog-social", "collection"
 )
 
 DEFAULT_SCHEDULE = {
+    "collection": {"enabled": True, "type": "interval_minutes", "every_minutes": 5},
     "news": {"enabled": True, "type": "interval_minutes", "every_minutes": 30,
              "default_mode": "image"},
     "narrative": {"enabled": True, "type": "et_times_business_days",
@@ -309,13 +310,17 @@ def run_bot(bot: str, *, mode: str | None = None, force: bool = False,
         env["FORCE_POST"] = "true"  # スケジュール条件のみ無視。安全審査はバイパスしない。
 
     if bot in (
-        "report", "daily-improvement", "metrics", "radar", "fx-monitor", "market-data", "goal-monitor", "blog-social"
+        "report", "daily-improvement", "metrics", "radar", "fx-monitor", "market-data", "goal-monitor", "blog-social", "collection"
     ):
         started = datetime.now(JST)
         print(f"[RUN] bot={bot} started={started:%Y-%m-%d %H:%M:%S}")
         monitor_result = None
         try:
-            if bot == "report":
+            if bot == "collection":
+                from common.collection import enabled
+                from common.collection_feeds import collect_all
+                print(json.dumps({'collection':collect_all() if enabled() else [], 'x_post_called':False}, ensure_ascii=False))
+            elif bot == "report":
                 report_result=cmd_report(days=1)
                 rc=int(report_result.get("exit_code",0))
             elif bot == "daily-improvement":

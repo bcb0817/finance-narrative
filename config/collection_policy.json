@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "adoption_threshold": 70,
+  "weights": {"importance": 30, "novelty": 25, "relevance": 20, "timeliness": 15, "explanation": 10},
+  "max_age_hours": 24,
+  "market_internal_license": {"approved": false, "contract_reference": null, "datasets": [], "retention_days": null, "valid_until": null},
+  "source_overrides": {
+    "BOJ News": {"operator": "Bank of Japan", "region": "JP", "language": "en", "primary": true},
+    "MOF News": {"operator": "Ministry of Finance Japan", "region": "JP", "language": "ja", "primary": true},
+    "Fed Monetary Policy": {"operator": "Federal Reserve Board", "region": "US", "language": "en", "primary": true, "policy": "fed", "interval_seconds": 1800},
+    "Fed Speeches": {"operator": "Federal Reserve Board", "region": "US", "language": "en", "primary": true, "policy": "fed"},
+    "Fed H10 Japanese Yen": {"operator": "Federal Reserve Board", "region": "US", "language": "en", "primary": true, "policy": "fed"},
+    "BLS Latest Indicators": {"operator": "Bureau of Labor Statistics", "region": "US", "language": "en", "primary": true, "policy": "bls"},
+    "BEA": {"operator": "Bureau of Economic Analysis", "region": "US", "language": "en", "primary": true, "policy": "bea"},
+    "SEC Press Releases": {"operator": "Securities and Exchange Commission", "region": "US", "language": "en", "primary": true, "policy": "sec"},
+    "NVIDIA Investor Relations": {"operator": "NVIDIA", "region": "US", "language": "en", "primary": true},
+    "ECB USD Reference Rate": {"operator": "European Central Bank", "region": "EU", "language": "en", "primary": true},
+    "ECB JPY Reference Rate": {"operator": "European Central Bank", "region": "EU", "language": "en", "primary": true}
+  },
+  "rights": {
+    "fed": {"basis": "https://www.federalreserve.gov/disclaimer.htm", "checked_on": "2026-10-07", "hosts": ["www.federalreserve.gov"], "internal": true, "public_text": true, "public_numbers": true, "image": false, "derived": false, "public_llm": true, "attribution": "Federal Reserve Board", "retention_days": 90, "scope": "Official feed text only; no third-party works, logos or original images"},
+    "bls": {"basis": "https://www.bls.gov/opub/copyright-information.htm", "checked_on": "2026-10-07", "hosts": ["www.bls.gov", "bls.gov"], "internal": true, "public_text": true, "public_numbers": true, "image": false, "derived": false, "public_llm": true, "attribution": "Bureau of Labor Statistics", "retention_days": 90, "scope": "Official feed text only; no previously copyrighted photographs or illustrations"},
+    "bea": {"basis": "https://www.bea.gov/help/faq/147", "checked_on": "2026-10-07", "hosts": ["www.bea.gov", "apps.bea.gov"], "internal": true, "public_text": true, "public_numbers": true, "image": false, "derived": false, "public_llm": true, "attribution": "Bureau of Economic Analysis", "retention_days": 90, "scope": "Official BEA feed text only"},
+    "sec": {"basis": "https://www.sec.gov/files/about/webmaster-faq.htm", "checked_on": "2026-10-07", "hosts": ["www.sec.gov", "sec.gov"], "internal": true, "public_text": true, "public_numbers": true, "image": false, "derived": false, "public_llm": true, "attribution": "SEC", "retention_days": 90, "scope": "SEC-created press release feed text only; fair-access identified User-Agent required"}
+  },
+  "additional_feeds": {
+    "BOJ News": {"url": "https://www.boj.or.jp/en/rss/whatsnew.xml", "group": "official_macro", "priority": 10, "enabled": false, "discovery_url": "https://www.boj.or.jp/en/whatsnew/", "availability_checked_on": "2026-10-07", "status": "200; 52 parsed entries; commercial reuse permission not verified"},
+    "MOF News": {"url": "https://www.mof.go.jp/news.rss", "group": "official_macro", "priority": 10, "enabled": false, "discovery_url": "https://www.mof.go.jp/about_mof/rss/index.html", "availability_checked_on": "2026-10-07", "status": "200; 100 parsed entries; official terms link returned 404"}
+  },
+  "calendar": [],
+  "calendar_status": "No verified machine-readable independent release calendar imported yet"
+}

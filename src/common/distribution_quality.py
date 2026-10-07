@@ -9,11 +9,11 @@ from difflib import SequenceMatcher
 from statistics import median
 from common.runtime import JST, state_dir
 
-KINDS = {'price_move', 'earnings_calendar', 'regulation', 'ipo'}
+KINDS = {'price_move', 'earnings_calendar', 'regulation', 'ipo', 'economic_indicator', 'monetary_policy', 'earnings_result'}
 DIRECTIONS = {'買い', '売り', '中立'}
 LABELS = re.compile(r'(?:結論|理由|根拠|方向|目標比率|基準日|注目点|次の確認)\s*[:：]')
 HOLD = ('判定保留', '優位性未確認', '保有未入力')
-RULES = '''配信回復用の編集条件：価格変動、決算日程、規制、IPOの一件だけを扱う。
+RULES = '''配信回復用の編集条件：価格変動、決算日程・結果、規制、IPO、経済指標、金融政策の一件だけを扱う。
 3文以内、冒頭は20文字以内の具体的な事実。根拠に沿う編集判断を一文含める。
 判断は架空の個人経験・売買推奨・断定的価格予測ではない。無理に原因を補わない。
 X重み付き140〜220以内。結論・理由・注目点・次の確認等のラベルを使わない。
@@ -22,6 +22,9 @@ X重み付き140〜220以内。結論・理由・注目点・次の確認等の�
 
 
 def enabled():
+    from common.collection import enabled as collection_enabled
+    if collection_enabled():
+        return True
     from common.editorial_policy import enabled as editorial_enabled
     return editorial_enabled() and os.getenv('SINGA_QUALITY_POLICY_ENABLED', 'true').lower() in ('true', '1', 'yes')
 

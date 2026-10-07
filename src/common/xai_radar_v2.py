@@ -401,6 +401,9 @@ def _usage(response: Any) -> dict:
 
 
 def refresh(*, client: Any = None, now: datetime | None = None, force: bool = False) -> dict:
+    from common.collection import enabled
+    if enabled():
+        return {'status':'skipped', 'reason':'use_event_research_with_reservation', 'topics':load_cache(now)}
     current = now or _now()
     allowed, reason = _can_call(current)
     if not allowed:

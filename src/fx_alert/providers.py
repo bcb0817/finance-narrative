@@ -25,6 +25,9 @@ class TwelveDataProvider(FxDataProvider):
         self.api_key = api_key if api_key is not None else os.getenv("TWELVE_DATA_API_KEY", "").strip()
 
     def _request(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+        from common.collection import market_internal_reason
+        if reason := market_internal_reason('fx'):
+            raise RuntimeError(reason)
         if not self.api_key:
             raise RuntimeError("TWELVE_DATA_API_KEY is not configured")
         usage = provider_usage_summary()

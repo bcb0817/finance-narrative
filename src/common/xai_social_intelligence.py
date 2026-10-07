@@ -1101,7 +1101,7 @@ def _usage(response: Any) -> dict[str, Any]:
     output_details = getattr(usage, "output_tokens_details", None)
     ticks = int(getattr(usage, "cost_in_usd_ticks", 0) or 0)
     tools = int(getattr(usage, "num_server_side_tools_used", 0) or 0)
-    return {
+    result = {
         "attempted_tool_calls": tools, "successful_tool_calls": tools,
         "x_search_calls": tools,
         "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
@@ -1112,6 +1112,12 @@ def _usage(response: Any) -> dict[str, Any]:
         "reported_cost_usd": round(ticks / 1e10, 8) if ticks else None,
         "estimated_cost_usd": round(tools * 0.005, 6) if not ticks else 0.0,
     }
+    from common.collection import enabled
+    if enabled():
+        from common.xai_reservations import usage as measured_usage
+        measured = measured_usage(response)
+        result.update(measured, cost_usd=measured['reported_cost_usd'], estimated_cost_usd=None)
+    return result
 
 
 def _mode_for(candidates: list[EventCandidate], now: datetime) -> str:
@@ -1292,6 +1298,29 @@ def run(
             "api_called": False, "x_post_called": False,
         }
     run_id = uuid.uuid4().hex
+    from common.collection import enabled as collection_enabled, digest as collection_digest
+    reserved = False
+    if collection_enabled() and fixture_response is None:
+        from common.collection import market_internal_reason
+        # Cached market observations remain contract-bound; a search is also an
+        # external use of its input, not a way around the provider intake gate.
+        selected = [e for e in selected if not e.market_movement or not market_internal_reason(
+            'fx' if e.source_type == 'fx_movement' else 'market_data', current)]
+        selected = [e for e in selected if (
+            (e.open_questions or e.unconfirmed_claims) and e.market_impact_score >= 5
+            or e.source_type in ('fx_movement','market_movement') and not e.confirmed_facts
+            or mode == 'expert_watch' and e.official
+            or mode == 'exploration')][:1]
+        if not selected:
+            return {'status':'skipped', 'reason':'no_unresolved_research_need', 'events':[]}
+        try:
+            from common.xai_reservations import reserve
+            reserve(run_id, collection_digest([{'id':e.candidate_id, 'facts':e.confirmed_facts,
+                'questions':e.open_questions,'claims':e.unconfirmed_claims} for e in selected]), current,
+                exploration=mode == 'exploration')
+            reserved = True
+        except Exception as exc:
+            return {'status':'skipped', 'reason':str(exc) if isinstance(exc,ValueError) else 'reservation_unavailable', 'events':[]}
     started = time.perf_counter()
     response = None
     parsed: Any = None
@@ -1314,7 +1343,7 @@ def run(
                 "per event, prioritizing independent and primary-source commentary.\n"
                 + json.dumps(_event_payload(selected), ensure_ascii=False)
             )
-            search_days = _env_int("XAI_SEARCH_LOOKBACK_DAYS", 3, 1)
+            search_days = 1 if collection_enabled() else _env_int("XAI_SEARCH_LOOKBACK_DAYS", 3, 1)
             search_tool = {
                 "type": "x_search",
                 "from_date": (current.date() - timedelta(days=min(search_days, 14))).isoformat(),
@@ -1461,7 +1490,7 @@ def run(
                 })
         cost = usage.get("cost_usd")
         if cost is None:
-            cost = usage.get("estimated_cost_usd") or 0.0
+            cost = None if collection_enabled() else usage.get("estimated_cost_usd") or 0.0
         run_row = {
             "timestamp": current.isoformat(), "run_id": run_id,
             "request_id": str(getattr(response, "id", "") or ""),
@@ -1497,6 +1526,9 @@ def run(
             "cost_policy": policy,
         }
         _record_run(run_row)
+        if reserved:
+            from common.xai_reservations import settle
+            settle(run_id, response)
         _atomic_json(xai_dir() / "state.json", {
             "last_successful_run": run_id, "last_successful_at": current.isoformat(),
             "last_mode": mode, "last_event_ids": run_row["event_ids"],
@@ -1517,6 +1549,9 @@ def run(
             "usage": run_row, "x_post_called": False,
         }
     except Exception as exc:
+        if reserved:
+            from common.xai_reservations import settle
+            settle(run_id, response)
         failure_stage = failure_stage or "request_or_parse"
         usage = _usage(response)
         # Validation errors are fixed local codes, so recording them preserves
@@ -1538,7 +1573,7 @@ def run(
             "radar_mode": mode, "event_ids": [item.candidate_id for item in selected],
             "model": os.getenv("XAI_MODEL", "grok-4.5"),
             "status": "failed", "success": False, **usage,
-            "cost_usd": usage.get("cost_usd") or usage.get("estimated_cost_usd") or 0.0,
+            "cost_usd": usage.get("cost_usd") if collection_enabled() else usage.get("cost_usd") or usage.get("estimated_cost_usd") or 0.0,
             "latency_ms": round((time.perf_counter() - started) * 1000),
             "cache_hit": False, "events_researched": 0, "useful_events": 0,
             "useful_insights": 0, "unique_posts_returned": 0,

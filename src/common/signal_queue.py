@@ -34,6 +34,13 @@ def observe(snapshot, now, *, holiday=False, preview=False):
                 reason = 'expiry_missing'
         if not reason:
             reason = input_reason(event, asset['symbol'], direction, evidence, recent, now)
+        from common import collection
+        if not reason and collection.enabled():
+            # ETF/X Search payloads cannot create verified official evidence by
+            # attaching a citation URL. Require a previously acquired DB item.
+            normalized, reason = collection.public_evidence(evidence, now=now)
+            if not reason:
+                evidence = normalized
         payload = {'event': {**event, 'signal': True}, 'ticker': asset['symbol'], 'direction': direction,
                    'evidence': evidence, 'expires_at': asset.get('expiresAt'), 'snapshot_at': snapshot.get('generatedAt')}
         # No snapshot timestamp in the key: identical daily signals are not new facts.

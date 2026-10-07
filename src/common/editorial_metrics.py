@@ -49,6 +49,9 @@ def daily_review():
     path = root / 'metrics_snapshots.jsonl'
     snapshots = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []
     result = {'status': 'quality_only', 'target': None, 'automatic_actions': [], **summarize(posts, snapshots)}
+    from common import collection
+    if collection.enabled():
+        result['collection_quality'] = collection.daily_metrics()
     from common import distribution_quality as quality
     if quality.enabled():
         from datetime import datetime
